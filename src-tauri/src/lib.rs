@@ -240,6 +240,23 @@ fn update_settings(new_settings: Settings, state: tauri::State<'_, AppState>, ap
 }
 
 #[tauri::command]
+fn get_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_autostart_enabled(enabled: bool, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable().map_err(|e| e.to_string())
+    } else {
+        manager.disable().map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
 fn list_models() -> Vec<ModelStatus> {
     models::list_models()
 }
@@ -1058,6 +1075,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_nspanel::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
@@ -1075,6 +1096,8 @@ pub fn run() {
             open_settings,
             get_settings,
             update_settings,
+            get_autostart_enabled,
+            set_autostart_enabled,
             list_models,
             download_model,
             load_cleanup_model,
@@ -1121,6 +1144,25 @@ pub fn run() {
 
             macos_panel::make_panel(app);
             init_models_async(app.handle().clone());
+
+            // Enable autostart by default on first launch. The flag prevents
+            // re-enabling after the user explicitly disables it later.
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                let mut needs_init = false;
+                if let Ok(s) = app.state::<AppState>().settings.lock() {
+                    needs_init = !s.autostart_initialized;
+                }
+                if needs_init {
+                    if let Err(e) = app.autolaunch().enable() {
+                        eprintln!("Failed to enable autostart on first launch: {}", e);
+                    }
+                    if let Ok(mut s) = app.state::<AppState>().settings.lock() {
+                        s.autostart_initialized = true;
+                        s.save().ok();
+                    }
+                }
+            }
 
             // Only start FN key listener if accessibility is already granted
             // Otherwise, FRE will guide the user to enable it

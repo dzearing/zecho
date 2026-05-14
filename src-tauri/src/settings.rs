@@ -45,6 +45,8 @@ pub struct Settings {
     pub fn_key_enabled: bool,
     #[serde(default = "default_language")]
     pub language: String,
+    #[serde(default)]
+    pub autostart_initialized: bool,
     #[serde(skip)]
     pub(crate) path: PathBuf,
 }
@@ -73,6 +75,7 @@ impl Default for Settings {
             pill_y_pct: None,
             fn_key_enabled: true,
             language: "en".to_string(),
+            autostart_initialized: false,
             path: PathBuf::new(),
         }
     }

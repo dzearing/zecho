@@ -582,6 +582,14 @@
               <span class="toggle-knob"></span>
             </label>
           </div>
+          <div class="setting-row">
+            <span class="label">Start at login</span>
+            <label class="toggle">
+              <input type="checkbox" id="autostart-enabled" />
+              <span class="toggle-track"></span>
+              <span class="toggle-knob"></span>
+            </label>
+          </div>
         </div>
       </div>
 
@@ -655,6 +663,13 @@
       document.getElementById("language-select").value = settings.language || "en";
       document.getElementById("fn-key-enabled").checked = settings.fn_key_enabled !== false;
       renderHotkey();
+
+      try {
+        const autostartEnabled = await invoke("get_autostart_enabled");
+        document.getElementById("autostart-enabled").checked = !!autostartEnabled;
+      } catch (err) {
+        console.error("Failed to read autostart state:", err);
+      }
     }
 
     async function saveSettings() {
@@ -700,6 +715,22 @@
     document.getElementById("fn-key-enabled").addEventListener("change", (e) => {
       settings.fn_key_enabled = e.target.checked;
       saveSettings();
+    });
+
+    document.getElementById("autostart-enabled").addEventListener("change", async (e) => {
+      const checkbox = e.target;
+      const desired = checkbox.checked;
+      checkbox.disabled = true;
+      try {
+        await invoke("set_autostart_enabled", { enabled: desired });
+        const actual = await invoke("get_autostart_enabled");
+        checkbox.checked = !!actual;
+      } catch (err) {
+        console.error("Failed to update autostart:", err);
+        checkbox.checked = !desired;
+      } finally {
+        checkbox.disabled = false;
+      }
     });
 
     document.getElementById("language-select").addEventListener("change", async (e) => {

@@ -257,14 +257,12 @@ html, body {
   color: #c8b6ff;
 }
 
-#setup-spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(108, 92, 231, 0.3);
-  border-top-color: #6c5ce7;
-  border-radius: 50%;
-  animation: spin 0.7s linear infinite;
-  flex-shrink: 0;
+.setup-track {
+  border-color: rgba(108, 92, 231, 0.3);
+}
+.setup-arc {
+  border-top-color: #6c5ce7 !important;
+  animation-duration: 0.7s !important;
 }
 
 /* ── Processing state ── */
@@ -290,14 +288,27 @@ html, body {
   animation: fadeIn 0.15s ease;
 }
 
-#spinner {
+.spinner-wrap {
   width: 14px;
   height: 14px;
-  border: 2px solid var(--text-dim);
+  position: relative;
+  flex-shrink: 0;
+}
+.spinner-track {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--text-dim);
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.spinner-arc {
+  position: absolute;
+  inset: 0;
+  border: 1px solid transparent;
   border-top-color: var(--text);
   border-radius: 50%;
+  box-sizing: border-box;
   animation: spin 0.6s linear infinite;
-  flex-shrink: 0;
 }
 
 .pill-label {

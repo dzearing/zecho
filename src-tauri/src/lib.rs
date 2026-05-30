@@ -77,18 +77,30 @@ fn stop_recording(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> R
     }
 
     let app_handle = app.clone();
-    std::thread::spawn(move || {
-        let state: tauri::State<'_, AppState> = app_handle.state();
-        match process_recording(&state, samples) {
-            Ok(text) => {
-                app_handle.emit("transcription-complete", &text).ok();
+    std::thread::Builder::new()
+        .name("zecho-process".into())
+        .spawn(move || {
+            #[cfg(target_os = "macos")]
+            unsafe {
+                // QOS_CLASS_UTILITY = 0x11 — lower priority than user-interactive/initiated
+                extern "C" {
+                    fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+                }
+                pthread_set_qos_class_self_np(0x11, 0);
             }
-            Err(e) => {
-                eprintln!("Processing error: {}", e);
-                app_handle.emit("transcription-error", &e).ok();
+
+            let state: tauri::State<'_, AppState> = app_handle.state();
+            match process_recording(&state, samples) {
+                Ok(text) => {
+                    app_handle.emit("transcription-complete", &text).ok();
+                }
+                Err(e) => {
+                    eprintln!("Processing error: {}", e);
+                    app_handle.emit("transcription-error", &e).ok();
+                }
             }
-        }
-    });
+        })
+        .ok();
 
     Ok(())
 }
@@ -117,14 +129,17 @@ fn process_recording(state: &AppState, samples: Vec<f32>) -> Result<String, Stri
     }
 
     let t1 = Instant::now();
+    let (style, level, custom_prompt, cleanup_model_id) = {
+        let s = state.settings.lock().map_err(|e| e.to_string())?;
+        (s.writing_style.clone(), s.cleanup_level.clone(), s.custom_prompt.clone(), s.active_cleanup_model.clone())
+    };
     let cleaner = state.cleaner.lock().map_err(|e| e.to_string())?;
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
     let text = match cleaner.clean(
         &raw_text,
-        &settings.writing_style,
-        &settings.cleanup_level,
-        settings.custom_prompt.as_deref(),
-        &settings.active_cleanup_model,
+        &style,
+        &level,
+        custom_prompt.as_deref(),
+        &cleanup_model_id,
         &language,
     ) {
         Ok(t) => t,
@@ -134,7 +149,6 @@ fn process_recording(state: &AppState, samples: Vec<f32>) -> Result<String, Stri
         }
     };
     drop(cleaner);
-    drop(settings);
     let cleanup_ms = t1.elapsed().as_millis() as u64;
 
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;

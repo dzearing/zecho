@@ -2,6 +2,35 @@ use crate::settings::{CleanupLevel, WritingStyle};
 use std::path::Path;
 use std::sync::mpsc;
 
+enum ParseResult {
+    Ok(String),
+    Retry,
+    Fallback,
+}
+
+const TAG_FRAGMENTS: &[&str] = &["<start_of", "<end_of", "<|im_", "<|endo"];
+
+fn parse_response(response: &str, raw_text: &str) -> ParseResult {
+    let mut result = response.trim().replace("\\n", "\n");
+
+    let stop_markers = ["<end_of_turn>", "<start_of_turn>", "<|im_end|>", "<|endoftext|>"];
+    if let Some(pos) = stop_markers.iter().filter_map(|m| result.find(m)).min() {
+        result.truncate(pos);
+    }
+
+    let result = strip_model_artifacts(result.trim());
+
+    if TAG_FRAGMENTS.iter().any(|f| result.contains(f)) {
+        return ParseResult::Retry;
+    }
+
+    if result.is_empty() || result.len() > raw_text.len() * 2 + 20 {
+        return ParseResult::Fallback;
+    }
+
+    ParseResult::Ok(result)
+}
+
 pub struct CleanupRequest {
     pub raw_text: String,
     pub style: WritingStyle,
@@ -65,41 +94,43 @@ impl TextCleaner {
 
             
 
-            for req in rx {
-                let prompt = build_prompt(&req.raw_text, &req.style, &req.level, req.custom_prompt.as_deref(), &req.model_id, &req.language);
+            let mut send_and_read = |stdin: &mut std::process::ChildStdin, reader: &mut BufReader<std::process::ChildStdout>, prompt: &str| -> Option<String> {
                 let escaped = prompt.replace('\n', "\\n");
-
-                if writeln!(stdin, "{}", escaped).is_err() {
-                    let _ = req.reply.send(Ok(req.raw_text.clone()));
-                    continue;
-                }
-                if stdin.flush().is_err() {
-                    let _ = req.reply.send(Ok(req.raw_text.clone()));
-                    continue;
-                }
-
+                if writeln!(stdin, "{}", escaped).is_err() { return None; }
+                if stdin.flush().is_err() { return None; }
                 let mut response = String::new();
                 match reader.read_line(&mut response) {
-                    Ok(0) | Err(_) => {
-                        let _ = req.reply.send(Ok(req.raw_text.clone()));
-                        continue;
-                    }
-                    Ok(_) => {}
+                    Ok(0) | Err(_) => None,
+                    Ok(_) => Some(response),
                 }
+            };
 
-                let result = response.trim()
-                    .replace("\\n", "\n")
-                    .replace("<end_of_turn>", "")
-                    .replace("<start_of_turn>", "")
-                    .replace("<|im_end|>", "")
-                    .replace("<|endoftext|>", "")
-                    .trim().to_string();
-                let result = strip_model_artifacts(&result);
-                if result.is_empty() {
-                    let _ = req.reply.send(Ok(req.raw_text.clone()));
-                } else {
-                    let _ = req.reply.send(Ok(result));
-                }
+            for req in rx {
+                let prompt = build_prompt(&req.raw_text, &req.style, &req.level, req.custom_prompt.as_deref(), &req.model_id, &req.language);
+
+                let mut attempts = 0;
+                let result = loop {
+                    attempts += 1;
+                    let response = match send_and_read(&mut stdin, &mut reader, &prompt) {
+                        Some(r) => r,
+                        None => break req.raw_text.clone(),
+                    };
+
+                    let cleaned = parse_response(&response, &req.raw_text);
+                    match cleaned {
+                        ParseResult::Ok(text) => break text,
+                        ParseResult::Retry if attempts < 2 => {
+                            eprintln!("Cleanup: leaked tags detected, retrying (attempt {})", attempts + 1);
+                            continue;
+                        }
+                        _ => {
+                            eprintln!("Cleanup: retry failed, using raw text");
+                            break req.raw_text.clone();
+                        }
+                    }
+                };
+
+                let _ = req.reply.send(Ok(result));
             }
 
             let _ = child.kill();

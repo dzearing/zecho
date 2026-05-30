@@ -12,6 +12,7 @@ let isRecording = false;
 let recordingLocked = false;
 let waveformInterval = null;
 let fnHoldTimer = null;
+let doneTimer = null;
 let lastFnDown = 0;
 
 const DOUBLE_TAP_MS = 400;
@@ -86,6 +87,7 @@ function stopWaveform() {
 
 async function startRecording() {
   if (isRecording) return;
+  if (doneTimer) { clearTimeout(doneTimer); doneTimer = null; }
   try {
     await invoke("start_recording");
     isRecording = true;
@@ -220,7 +222,7 @@ listen("cancel-recording", () => {
 });
 listen("transcription-complete", () => {
   setState("done");
-  setTimeout(() => setState("idle"), 1200);
+  doneTimer = setTimeout(() => setState("idle"), 1200);
 });
 listen("transcription-error", (event) => {
   console.error("Transcription error:", event.payload);

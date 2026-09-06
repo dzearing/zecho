@@ -334,7 +334,7 @@ fn load_whisper_model_cmd(model_id: String, state: tauri::State<'_, AppState>) -
 
 #[tauri::command]
 fn update_hotkey(hotkey: String, state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
-    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
     let old_hotkey = state.settings.lock().map(|s| s.hotkey.clone()).unwrap_or_default();
     if let Some((mods, code)) = parse_hotkey(&old_hotkey) {
@@ -344,8 +344,12 @@ fn update_hotkey(hotkey: String, state: tauri::State<'_, AppState>, app: tauri::
 
     let (mods, code) = parse_hotkey(&hotkey).ok_or("Invalid hotkey")?;
     let new_shortcut = Shortcut::new(mods, code);
-    app.global_shortcut().on_shortcut(new_shortcut, |app_handle, _shortcut, _event| {
-        let _ = app_handle.emit("toggle-recording", ());
+    app.global_shortcut().on_shortcut(new_shortcut, |app_handle, _shortcut, event| {
+        // The plugin forwards both key-down and key-up. Toggling on both turns the
+        // shortcut into push-to-talk, so only act on the press.
+        if event.state == ShortcutState::Pressed {
+            let _ = app_handle.emit("toggle-recording", ());
+        }
     }).map_err(|e| e.to_string())?;
 
     let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
@@ -974,11 +978,17 @@ fn position_pill_window(window: &tauri::WebviewWindow, state: &AppState) {
 fn parse_hotkey(hotkey: &str) -> Option<(Option<tauri_plugin_global_shortcut::Modifiers>, tauri_plugin_global_shortcut::Code)> {
     use tauri_plugin_global_shortcut::{Code, Modifiers};
 
-    let parts: Vec<&str> = hotkey.split('+').map(|s| s.trim().to_lowercase()).collect::<Vec<_>>()
-        .iter().map(|s| s.as_str()).collect::<Vec<_>>()
-        .into_iter().collect();
-    // Re-do to avoid lifetime issues
-    let parts: Vec<String> = hotkey.split('+').map(|s| s.trim().to_lowercase()).collect();
+    // Split on '+' but keep a trailing literal '+' as the key itself (e.g. "cmd+shift++").
+    let parts: Vec<String> = if hotkey.ends_with("+") && hotkey.len() > 1 {
+        let mut p: Vec<String> = hotkey[..hotkey.len() - 1]
+            .split('+')
+            .map(|s| s.trim().to_lowercase())
+            .collect();
+        p.push("+".to_string());
+        p
+    } else {
+        hotkey.split('+').map(|s| s.trim().to_lowercase()).collect()
+    };
 
     let mut mods = Modifiers::empty();
     let mut key_part = String::new();
@@ -1012,6 +1022,34 @@ fn parse_hotkey(hotkey: &str) -> Option<(Option<tauri_plugin_global_shortcut::Mo
         "f1" => Code::F1, "f2" => Code::F2, "f3" => Code::F3, "f4" => Code::F4,
         "f5" => Code::F5, "f6" => Code::F6, "f7" => Code::F7, "f8" => Code::F8,
         "f9" => Code::F9, "f10" => Code::F10, "f11" => Code::F11, "f12" => Code::F12,
+
+        // Punctuation, by KeyboardEvent.code name and by the unshifted literal.
+        "backslash" | "\\" => Code::Backslash,
+        "bracketleft" | "[" => Code::BracketLeft,
+        "bracketright" | "]" => Code::BracketRight,
+        "semicolon" | ";" => Code::Semicolon,
+        "quote" | "'" => Code::Quote,
+        "comma" | "," => Code::Comma,
+        "period" | "." => Code::Period,
+        "slash" | "/" => Code::Slash,
+        "backquote" | "`" => Code::Backquote,
+        "minus" | "-" => Code::Minus,
+        "equal" | "=" | "+" => Code::Equal,
+
+        // Named non-printing keys.
+        "arrowup" | "up" => Code::ArrowUp,
+        "arrowdown" | "down" => Code::ArrowDown,
+        "arrowleft" | "left" => Code::ArrowLeft,
+        "arrowright" | "right" => Code::ArrowRight,
+        "enter" | "return" => Code::Enter,
+        "tab" => Code::Tab,
+        "backspace" => Code::Backspace,
+        "delete" => Code::Delete,
+        "home" => Code::Home,
+        "end" => Code::End,
+        "pageup" => Code::PageUp,
+        "pagedown" => Code::PageDown,
+        "insert" => Code::Insert,
         _ => return None,
     };
 
@@ -1020,26 +1058,40 @@ fn parse_hotkey(hotkey: &str) -> Option<(Option<tauri_plugin_global_shortcut::Mo
 }
 
 fn register_global_shortcut(app: &tauri::App) {
-    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
     let state: tauri::State<'_, AppState> = app.state();
     let hotkey = state.settings.lock().map(|s| s.hotkey.clone()).unwrap_or_else(|_| "alt+space".to_string());
 
-    if let Some((mods, code)) = parse_hotkey(&hotkey) {
-        let shortcut = Shortcut::new(mods, code);
-        app.global_shortcut().on_shortcut(shortcut, |app_handle, _shortcut, _event| {
-            let _ = app_handle.emit("toggle-recording", ());
-        }).ok();
+    match parse_hotkey(&hotkey) {
+        Some((mods, code)) => {
+            let shortcut = Shortcut::new(mods, code);
+            match app.global_shortcut().on_shortcut(shortcut, |app_handle, _shortcut, event| {
+                // Only the press toggles; the matching release must be ignored or the
+                // shortcut degrades into push-to-talk.
+                // Only the press toggles; the matching release must be ignored or the
+                // shortcut degrades into push-to-talk.
+                if event.state == ShortcutState::Pressed {
+                    let _ = app_handle.emit("toggle-recording", ());
+                }
+            }) {
+                Ok(()) => eprintln!("zecho: registered global hotkey {hotkey}"),
+                Err(e) => eprintln!("zecho: failed to register global hotkey {hotkey}: {e}"),
+            }
+        }
+        None => eprintln!("zecho: unsupported hotkey in settings: {hotkey}"),
     }
 }
 
 fn register_escape_shortcut(app: &tauri::AppHandle) {
-    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut};
+    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutState};
 
     let esc = Shortcut::new(None, Code::Escape);
     if !app.global_shortcut().is_registered(esc) {
-        app.global_shortcut().on_shortcut(esc, |app_handle, _shortcut, _event| {
-            let _ = app_handle.emit("cancel-recording", ());
+        app.global_shortcut().on_shortcut(esc, |app_handle, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                let _ = app_handle.emit("cancel-recording", ());
+            }
         }).ok();
     }
 }
@@ -1236,4 +1288,53 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error running zecho");
+}
+
+#[cfg(test)]
+mod hotkey_parse_tests {
+    use super::parse_hotkey;
+    use tauri_plugin_global_shortcut::{Code, Modifiers};
+
+    #[test]
+    fn parses_letter_hotkey() {
+        let (mods, code) = parse_hotkey("cmd+shift+r").expect("cmd+shift+r should parse");
+        assert_eq!(mods, Some(Modifiers::SHIFT | Modifiers::META));
+        assert_eq!(code, Code::KeyR);
+    }
+
+    #[test]
+    fn parses_backslash_hotkey() {
+        let (mods, code) = parse_hotkey("cmd+shift+backslash").expect("backslash should parse");
+        assert_eq!(mods, Some(Modifiers::SHIFT | Modifiers::META));
+        assert_eq!(code, Code::Backslash);
+    }
+
+    #[test]
+    fn parses_punctuation_literals() {
+        assert_eq!(parse_hotkey("cmd+\\").map(|(_, c)| c), Some(Code::Backslash));
+        assert_eq!(parse_hotkey("cmd+-").map(|(_, c)| c), Some(Code::Minus));
+        assert_eq!(parse_hotkey("cmd+/").map(|(_, c)| c), Some(Code::Slash));
+        assert_eq!(parse_hotkey("cmd+[").map(|(_, c)| c), Some(Code::BracketLeft));
+        assert_eq!(parse_hotkey("cmd+`").map(|(_, c)| c), Some(Code::Backquote));
+    }
+
+    #[test]
+    fn parses_named_keys() {
+        assert_eq!(parse_hotkey("cmd+up").map(|(_, c)| c), Some(Code::ArrowUp));
+        assert_eq!(parse_hotkey("cmd+enter").map(|(_, c)| c), Some(Code::Enter));
+        assert_eq!(parse_hotkey("cmd+tab").map(|(_, c)| c), Some(Code::Tab));
+    }
+
+    #[test]
+    fn modifier_order_does_not_matter() {
+        assert_eq!(
+            parse_hotkey("shift+cmd+backslash"),
+            parse_hotkey("cmd+shift+backslash")
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_key() {
+        assert!(parse_hotkey("cmd+shift+nonsense").is_none());
+    }
 }

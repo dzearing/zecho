@@ -766,15 +766,54 @@
 
     // ── Hotkey recorder ──
 
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+    }
+
     const KEY_LABELS = {
-      " ": "Space", Control: "Ctrl", Alt: "Option", Meta: "Cmd", Shift: "Shift",
+      alt: "Option", ctrl: "Ctrl", shift: "Shift", cmd: "Cmd", meta: "Cmd", space: "Space",
+      backslash: "\\", bracketleft: "[", bracketright: "]", semicolon: ";", quote: "'",
+      comma: ",", period: ".", slash: "/", backquote: "`", minus: "-", equal: "=",
+      arrowup: "\u2191", arrowdown: "\u2193", arrowleft: "\u2190", arrowright: "\u2192",
+      enter: "Enter", tab: "Tab", backspace: "Backspace", delete: "Delete",
+      home: "Home", end: "End", pageup: "Page Up", pagedown: "Page Down", insert: "Insert",
     };
+
+    // Keys the backend (parse_hotkey in lib.rs) can register as a global shortcut.
+    const SUPPORTED_KEYS = new Set([
+      "space", "backslash", "bracketleft", "bracketright", "semicolon", "quote",
+      "comma", "period", "slash", "backquote", "minus", "equal",
+      "arrowup", "arrowdown", "arrowleft", "arrowright",
+      "enter", "tab", "backspace", "delete", "home", "end", "pageup", "pagedown", "insert",
+      ..."abcdefghijklmnopqrstuvwxyz0123456789".split(""),
+      // Literal punctuation, for the fallback path when e.code is unavailable.
+      ...["\\", "[", "]", ";", "'", ",", ".", "/", "`", "-", "="],
+      ...Array.from({ length: 12 }, (_, i) => `f${i + 1}`),
+    ]);
+
+    // KeyboardEvent.code is the physical key, so Shift+Backslash stays "backslash"
+    // instead of becoming "|" (and non-US layouts still map to the right key).
+    function eventToKeyToken(e) {
+      const code = e.code || "";
+      let m;
+      if ((m = /^Key([A-Z])$/.exec(code))) return m[1].toLowerCase();
+      if ((m = /^(?:Digit|Numpad)(\d)$/.exec(code))) return m[1];
+      if (/^F\d{1,2}$/.test(code)) return code.toLowerCase();
+      if (code) {
+        const token = code.toLowerCase();
+        if (SUPPORTED_KEYS.has(token)) return token;
+      }
+      // Fall back to the character for layouts/browsers without a usable code.
+      const key = e.key === " " ? "space" : (e.key || "").toLowerCase();
+      return SUPPORTED_KEYS.has(key) ? key : null;
+    }
 
     function hotkeyToKbds(hotkey) {
       if (!hotkey) return "<kbd>Option</kbd><kbd>Space</kbd>";
       return hotkey.split("+").map((p) => {
-        const label = { alt: "Option", ctrl: "Ctrl", shift: "Shift", cmd: "Cmd", meta: "Cmd", space: "Space" }[p.toLowerCase()] || p.toUpperCase();
-        return `<kbd>${label}</kbd>`;
+        const label = KEY_LABELS[p.toLowerCase()] || p.toUpperCase();
+        return `<kbd>${escapeHtml(label)}</kbd>`;
       }).join("");
     }
 
@@ -822,7 +861,12 @@
 
       if (parts.length === 0) return; // Require at least one modifier
 
-      const key = e.key === " " ? "space" : e.key.toLowerCase();
+      const key = eventToKeyToken(e);
+      if (!key) {
+        // Unsupported key: stay in recording mode so the user can try another one.
+        document.getElementById("hotkey-display").innerHTML = "<kbd>Key not supported</kbd>";
+        return;
+      }
       parts.push(key);
 
       const hotkey = parts.join("+");
@@ -832,6 +876,9 @@
         settings.hotkey = hotkey;
       } catch (err) {
         console.error("Hotkey update error:", err);
+        document.getElementById("hotkey-display").innerHTML =
+          `<kbd>${escapeHtml(String(err))}</kbd>`;
+        return;
       }
 
       recordingHotkey = false;

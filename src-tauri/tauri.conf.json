@@ -1,6 +1,6 @@
 {
   "productName": "Zecho",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "identifier": "com.dzearing.zecho",
   "build": {
     "frontendDist": "../ui"

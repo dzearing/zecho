@@ -101,7 +101,7 @@ impl Settings {
                 return;
             }
         }
-        let candidates = ["qwen25-1.5b", "qwen25-3b", "gemma4-e2b", "gemma4-e4b"];
+        let candidates = ["qwen25-1.5b", "qwen25-3b", "gemma4-e2b", "gemma4-e4b", "spokenly-cleanup-1"];
         for id in &candidates {
             if let Some(info) = models::get_model(id) {
                 if models::is_downloaded(info) {

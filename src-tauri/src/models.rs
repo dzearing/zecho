@@ -157,6 +157,22 @@ pub const AVAILABLE_MODELS: &[ModelInfo] = &[
         files: &[],
     },
     // Cleanup models
+    // Spokenly Cleanup 1: a Qwen3-0.6B fine-tune for dictation cleanup. Apache-2.0. Pinned to a revision.
+    // It takes its own fixed prompt, so writing style, cleanup level and custom instructions don't apply.
+    ModelInfo {
+        id: "spokenly-cleanup-1",
+        name: "Spokenly Cleanup",
+        description: "Fastest. Trained only for dictation cleanup; ignores writing style and custom instructions.",
+        size_mb: 610,
+        quality_score: 8,
+        speed_score: 10,
+        filename: "spokenly-cleanup-1-q8_0.gguf",
+        url: "https://huggingface.co/spokenly/cleanup-1-gguf/resolve/79936c95e5c0ea9162ae7a435e64cb3127020e36/cleanup-1-q8_0.gguf",
+        model_type: ModelType::Cleanup,
+        multilingual: false,
+        engine: Engine::Llama,
+        files: &[],
+    },
     ModelInfo {
         id: "qwen25-1.5b",
         name: "Balanced",

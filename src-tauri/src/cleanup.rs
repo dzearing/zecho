@@ -13,7 +13,7 @@ const TAG_FRAGMENTS: &[&str] = &["<start_of", "<end_of", "<|im_", "<|endo"];
 fn parse_response(response: &str, raw_text: &str) -> ParseResult {
     let mut result = response.trim().replace("\\n", "\n");
 
-    let stop_markers = ["<end_of_turn>", "<start_of_turn>", "<|im_end|>", "<|endoftext|>"];
+    let stop_markers = ["<end_of_turn>", "<start_of_turn>", "<|im_end|>", "<|endoftext|>", "\ntext:"];
     if let Some(pos) = stop_markers.iter().filter_map(|m| result.find(m)).min() {
         result.truncate(pos);
     }
@@ -194,6 +194,11 @@ pub fn build_prompt(
     model_id: &str,
     language: &str,
 ) -> String {
+    // Spokenly was trained on one fixed completion prompt; instructions would only confuse it.
+    if model_id.starts_with("spokenly") {
+        return format!("text: {}\nout:", raw_text);
+    }
+
     let lang_name = match language {
         "zh" => "Chinese",
         "es" => "Spanish",
@@ -394,3 +399,22 @@ fn strip_model_artifacts(text: &str) -> String {
     s.trim().to_string()
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spokenly_gets_its_trained_prompt() {
+        let p = build_prompt("um hi there", &WritingStyle::Formal, &CleanupLevel::High, Some("be terse"), "spokenly-cleanup-1", "en");
+        assert_eq!(p, "text: um hi there\nout:");
+    }
+
+    #[test]
+    fn spokenly_output_stops_at_the_next_prompt() {
+        match parse_response(" Hi there.\ntext: something else", "um hi there") {
+            ParseResult::Ok(t) => assert_eq!(t, "Hi there."),
+            _ => panic!("expected Ok"),
+        }
+    }
+}

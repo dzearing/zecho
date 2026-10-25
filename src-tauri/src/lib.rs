@@ -458,7 +458,7 @@ struct SetupStatus {
 fn check_setup(state: tauri::State<'_, AppState>) -> SetupStatus {
     let active_id = state.settings.lock().map(|s| s.active_whisper_model.clone()).unwrap_or_default();
     let whisper_ready = models::speech_model_candidates(&active_id).into_iter().any(models::is_downloaded);
-    let cleanup_candidates = ["gemma4-e2b", "gemma4-e4b", "qwen25-1.5b", "qwen25-3b"];
+    let cleanup_candidates = ["gemma4-e2b", "gemma4-e4b", "qwen25-1.5b", "qwen25-3b", "spokenly-cleanup-1"];
     let cleanup_ready = cleanup_candidates
         .iter()
         .any(|id| models::get_model(id).map(|m| models::is_downloaded(m)).unwrap_or(false));
@@ -520,7 +520,7 @@ fn setup_download_models(app: tauri::AppHandle) {
             }
         }
 
-        let cleanup_candidates = ["gemma4-e2b", "gemma4-e4b", "qwen25-1.5b", "qwen25-3b"];
+        let cleanup_candidates = ["gemma4-e2b", "gemma4-e4b", "qwen25-1.5b", "qwen25-3b", "spokenly-cleanup-1"];
         let mut cleanup_downloaded = false;
         for id in &cleanup_candidates {
             if let Some(info) = models::get_model(id) {
@@ -1312,7 +1312,7 @@ pub fn run() {
             let cleanup_handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(3));
-                let cleanup_candidates = ["gemma4-e2b", "gemma4-e4b", "qwen25-1.5b", "qwen25-3b"];
+                let cleanup_candidates = ["gemma4-e2b", "gemma4-e4b", "qwen25-1.5b", "qwen25-3b", "spokenly-cleanup-1"];
                 for id in &cleanup_candidates {
                     if let Some(info) = models::get_model(id) {
                         let path = models::model_path(info);

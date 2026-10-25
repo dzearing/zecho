@@ -313,16 +313,33 @@ pub fn whisper_model_for_language(current_id: &str, language: &str) -> String {
     }
 }
 
-pub fn default_cleanup_model() -> &'static ModelInfo {
-    get_model("spokenly-cleanup-1").unwrap()
+/// Whether a cleanup model handles `language`. Spokenly is trained on a handful of languages;
+/// the general-purpose models are prompted in the target language.
+pub fn cleanup_supports(info: &ModelInfo, language: &str) -> bool {
+    if info.id.starts_with("spokenly") {
+        return matches!(language, "en" | "de" | "es" | "fr" | "zh" | "ru" | "ja");
+    }
+    true
 }
 
-/// Cleanup models to try, best first: the user's choice, the default, then any other cleanup model.
-pub fn cleanup_model_candidates(active_id: &str) -> Vec<&'static ModelInfo> {
+pub fn default_cleanup_model(language: &str) -> &'static ModelInfo {
+    let spokenly = get_model("spokenly-cleanup-1").unwrap();
+    if cleanup_supports(spokenly, language) {
+        spokenly
+    } else {
+        get_model("gemma4-e2b").unwrap()
+    }
+}
+
+/// Cleanup models to try for `language`, best first: the user's choice, the default, then any other.
+pub fn cleanup_model_candidates(active_id: &str, language: &str) -> Vec<&'static ModelInfo> {
     let mut out: Vec<&'static ModelInfo> = Vec::new();
     let others = AVAILABLE_MODELS.iter().filter(|m| m.model_type == ModelType::Cleanup);
-    for info in [get_model(active_id), Some(default_cleanup_model())].into_iter().flatten().chain(others) {
-        if info.model_type == ModelType::Cleanup && !out.iter().any(|m| m.id == info.id) {
+    for info in [get_model(active_id), Some(default_cleanup_model(language))].into_iter().flatten().chain(others) {
+        if info.model_type == ModelType::Cleanup
+            && cleanup_supports(info, language)
+            && !out.iter().any(|m| m.id == info.id)
+        {
             out.push(info);
         }
     }
@@ -457,13 +474,22 @@ mod tests {
 
     #[test]
     fn cleanup_candidates_put_the_active_model_first() {
-        let ids = |active: &str| cleanup_model_candidates(active).iter().map(|m| m.id).collect::<Vec<_>>();
+        let ids = |active: &str| cleanup_model_candidates(active, "en").iter().map(|m| m.id).collect::<Vec<_>>();
         assert_eq!(ids("gemma4-e4b")[..2], ["gemma4-e4b", "spokenly-cleanup-1"]);
         assert_eq!(ids("unknown")[0], "spokenly-cleanup-1");
         assert_eq!(ids("whisper-base-en")[0], "spokenly-cleanup-1");
         let all = ids("qwen25-3b");
         assert!(all.iter().all(|id| get_model(id).unwrap().model_type == ModelType::Cleanup));
         assert_eq!(all.len(), AVAILABLE_MODELS.iter().filter(|m| m.model_type == ModelType::Cleanup).count());
+    }
+
+    #[test]
+    fn spokenly_is_skipped_for_languages_it_was_not_trained_on() {
+        assert_eq!(default_cleanup_model("de").id, "spokenly-cleanup-1");
+        assert_eq!(default_cleanup_model("ko").id, "gemma4-e2b");
+        let ko: Vec<_> = cleanup_model_candidates("spokenly-cleanup-1", "ko").iter().map(|m| m.id).collect();
+        assert_eq!(ko[0], "gemma4-e2b");
+        assert!(!ko.contains(&"spokenly-cleanup-1"));
     }
 
     #[test]

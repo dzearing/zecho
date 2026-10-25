@@ -43,14 +43,22 @@ pub struct CleanupRequest {
 
 pub struct TextCleaner {
     sender: Option<mpsc::Sender<CleanupRequest>>,
+    /// The model the worker is running. Prompts are built for it, not for the settings, so
+    /// they can't drift apart while a newly selected model is still downloading.
+    model_id: Option<String>,
 }
 
 impl TextCleaner {
     pub fn new() -> Self {
-        Self { sender: None }
+        Self { sender: None, model_id: None }
     }
 
-    pub fn start_worker(&mut self, model_path: &Path) -> Result<(), String> {
+    pub fn model_id(&self) -> Option<&str> {
+        self.model_id.as_deref()
+    }
+
+    pub fn start_worker(&mut self, model_id: &str, model_path: &Path) -> Result<(), String> {
+        self.model_id = Some(model_id.to_string());
         let path = model_path.to_path_buf();
         let (tx, rx) = mpsc::channel::<CleanupRequest>();
 
@@ -150,7 +158,6 @@ impl TextCleaner {
         style: &WritingStyle,
         level: &CleanupLevel,
         custom_prompt: Option<&str>,
-        model_id: &str,
         language: &str,
     ) -> Result<String, String> {
         if *level == CleanupLevel::None {
@@ -164,7 +171,7 @@ impl TextCleaner {
                 style: style.clone(),
                 level: level.clone(),
                 custom_prompt: custom_prompt.map(|s| s.to_string()),
-                model_id: model_id.to_string(),
+                model_id: self.model_id.clone().unwrap_or_default(),
                 language: language.to_string(),
                 reply: reply_tx,
             };

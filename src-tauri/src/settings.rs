@@ -69,7 +69,7 @@ impl Default for Settings {
             cleanup_level: CleanupLevel::default(),
             custom_prompt: None,
             active_whisper_model: crate::models::default_whisper_model().id.to_string(),
-            active_cleanup_model: crate::models::default_cleanup_model().id.to_string(),
+            active_cleanup_model: crate::models::default_cleanup_model("en").id.to_string(),
             setup_complete: false,
             pill_x_pct: None,
             pill_y_pct: None,
@@ -97,11 +97,11 @@ impl Settings {
         use crate::models;
 
         if let Some(info) = models::get_model(&self.active_cleanup_model) {
-            if models::is_downloaded(info) {
+            if models::is_downloaded(info) && models::cleanup_supports(info, &self.language) {
                 return;
             }
         }
-        if let Some(info) = models::cleanup_model_candidates(&self.active_cleanup_model)
+        if let Some(info) = models::cleanup_model_candidates(&self.active_cleanup_model, &self.language)
             .into_iter()
             .find(|m| models::is_downloaded(m))
         {

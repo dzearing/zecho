@@ -130,17 +130,17 @@ fn process_recording(state: &AppState, samples: Vec<f32>) -> Result<String, Stri
     }
 
     let t1 = Instant::now();
-    let (style, level, custom_prompt, cleanup_model_id) = {
+    let (style, level, custom_prompt) = {
         let s = state.settings.lock().map_err(|e| e.to_string())?;
-        (s.writing_style.clone(), s.cleanup_level.clone(), s.custom_prompt.clone(), s.active_cleanup_model.clone())
+        (s.writing_style.clone(), s.cleanup_level.clone(), s.custom_prompt.clone())
     };
     let cleaner = state.cleaner.lock().map_err(|e| e.to_string())?;
+    let cleanup_model = cleaner.model_id().unwrap_or_default().to_string();
     let text = match cleaner.clean(
         &raw_text,
         &style,
         &level,
         custom_prompt.as_deref(),
-        &cleanup_model_id,
         &language,
     ) {
         Ok(t) => t,
@@ -157,7 +157,6 @@ fn process_recording(state: &AppState, samples: Vec<f32>) -> Result<String, Stri
 
     let settings2 = state.settings.lock().map_err(|e| e.to_string())?;
     let stt_model = settings2.active_whisper_model.clone();
-    let cleanup_model = settings2.active_cleanup_model.clone();
     drop(settings2);
 
     let mut history = state.history.lock().map_err(|e| e.to_string())?;
@@ -312,6 +311,15 @@ fn download_model(model_id: String, app: tauri::AppHandle) -> Result<(), String>
                             }
                         }
                     }
+                    if info.model_type == models::ModelType::Cleanup {
+                        let state = app.state::<AppState>();
+                        let active = state.settings.lock().map(|s| s.active_cleanup_model.clone()).unwrap_or_default();
+                        if let Ok(mut c) = state.cleaner.lock() {
+                            if active == info.id && c.model_id() != Some(info.id) {
+                                c.start_worker(info.id, &path).ok();
+                            }
+                        };
+                    }
                     app.emit("model-download-complete", &info.id).ok();
                 }
                 Err(e) => {
@@ -333,7 +341,7 @@ fn load_cleanup_model(model_id: String, state: tauri::State<'_, AppState>) -> Re
         return Err(format!("Model not downloaded: {}", info.name));
     }
     let mut cleaner = state.cleaner.lock().map_err(|e| e.to_string())?;
-    cleaner.start_worker(&path)
+    cleaner.start_worker(info.id, &path)
 }
 
 #[tauri::command]
@@ -374,24 +382,48 @@ fn update_hotkey(hotkey: String, state: tauri::State<'_, AppState>, app: tauri::
 }
 
 #[tauri::command]
-fn switch_language(language: String, state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    let current_whisper = settings.active_whisper_model.clone();
-    drop(settings);
+fn switch_language(language: String, state: tauri::State<'_, AppState>) -> Result<LanguageSwitch, String> {
+    let (current_whisper, current_cleanup) = {
+        let s = state.settings.lock().map_err(|e| e.to_string())?;
+        (s.active_whisper_model.clone(), s.active_cleanup_model.clone())
+    };
+
+    let mut result = LanguageSwitch { whisper: None, cleanup: None };
 
     let target_id = models::whisper_model_for_language(&current_whisper, &language);
-    if target_id == current_whisper {
-        return Ok(None);
+    if target_id != current_whisper {
+        let info = models::get_model(&target_id).ok_or("Unknown model")?;
+        if models::is_downloaded(info) {
+            let engine = transcribe::open_engine(&models::model_path(info))?;
+            state.transcriber.lock().map_err(|e| e.to_string())?.set_engine(engine);
+        }
+        result.whisper = Some(target_id);
     }
 
-    let info = models::get_model(&target_id).ok_or("Unknown model")?;
-    let path = models::model_path(info);
-    if models::is_downloaded(info) {
-        let engine = transcribe::open_engine(&path)?;
-        state.transcriber.lock().map_err(|e| e.to_string())?.set_engine(engine);
+    // Keep the cleanup model if it handles the language; otherwise use a downloaded one that does,
+    // or the language's default (which the UI then downloads; the worker switches when it lands).
+    let current = models::get_model(&current_cleanup);
+    if !current.map(|m| models::cleanup_supports(m, &language)).unwrap_or(false) {
+        let candidates = models::cleanup_model_candidates(&current_cleanup, &language);
+        let target = candidates
+            .iter()
+            .copied()
+            .find(|m| models::is_downloaded(m))
+            .unwrap_or_else(|| models::default_cleanup_model(&language));
+        if models::is_downloaded(target) {
+            state.cleaner.lock().map_err(|e| e.to_string())?.start_worker(target.id, &models::model_path(target))?;
+        }
+        state.settings.lock().map_err(|e| e.to_string())?.active_cleanup_model = target.id.to_string();
+        result.cleanup = Some(target.id.to_string());
     }
 
-    Ok(Some(target_id))
+    Ok(result)
+}
+
+#[derive(serde::Serialize)]
+struct LanguageSwitch {
+    whisper: Option<String>,
+    cleanup: Option<String>,
 }
 
 #[tauri::command]
@@ -458,7 +490,8 @@ struct SetupStatus {
 fn check_setup(state: tauri::State<'_, AppState>) -> SetupStatus {
     let active_id = state.settings.lock().map(|s| s.active_whisper_model.clone()).unwrap_or_default();
     let whisper_ready = models::speech_model_candidates(&active_id).into_iter().any(models::is_downloaded);
-    let cleanup_ready = models::cleanup_model_candidates("").into_iter().any(models::is_downloaded);
+    let language = state.settings.lock().map(|s| s.language.clone()).unwrap_or_else(|_| "en".to_string());
+    let cleanup_ready = models::cleanup_model_candidates("", &language).into_iter().any(models::is_downloaded);
 
     SetupStatus {
         whisper_ready,
@@ -517,9 +550,13 @@ fn setup_download_models(app: tauri::AppHandle) {
             }
         }
 
-        let active_cleanup = state.settings.lock().map(|s| s.active_cleanup_model.clone()).unwrap_or_default();
-        if !models::cleanup_model_candidates(&active_cleanup).into_iter().any(models::is_downloaded) {
-            let info = models::default_cleanup_model();
+        let (active_cleanup, language) = state
+            .settings
+            .lock()
+            .map(|s| (s.active_cleanup_model.clone(), s.language.clone()))
+            .unwrap_or_default();
+        if !models::cleanup_model_candidates(&active_cleanup, &language).into_iter().any(models::is_downloaded) {
+            let info = models::default_cleanup_model(&language);
             app.emit("setup-progress", "Downloading cleanup model...").ok();
             match models::download_model_blocking(info, |_, _| {}) {
                 Ok(_) => {
@@ -533,9 +570,9 @@ fn setup_download_models(app: tauri::AppHandle) {
         }
 
         // Start the cleanup worker
-        if let Some(info) = models::cleanup_model_candidates(&active_cleanup).into_iter().find(|m| models::is_downloaded(m)) {
+        if let Some(info) = models::cleanup_model_candidates(&active_cleanup, &language).into_iter().find(|m| models::is_downloaded(m)) {
             let mut c = state.cleaner.lock().unwrap();
-            c.start_worker(&models::model_path(info)).ok();
+            c.start_worker(info.id, &models::model_path(info)).ok();
             drop(c);
             if let Ok(mut s) = state.settings.lock() {
                 s.active_cleanup_model = info.id.to_string();
@@ -1297,10 +1334,14 @@ pub fn run() {
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 // Start the model the user chose; the cleanup prompt is built for that model.
                 let state = cleanup_handle.state::<AppState>();
-                let active = state.settings.lock().map(|s| s.active_cleanup_model.clone()).unwrap_or_default();
-                if let Some(info) = models::cleanup_model_candidates(&active).into_iter().find(|m| models::is_downloaded(m)) {
+                let (active, language) = state
+                    .settings
+                    .lock()
+                    .map(|s| (s.active_cleanup_model.clone(), s.language.clone()))
+                    .unwrap_or_default();
+                if let Some(info) = models::cleanup_model_candidates(&active, &language).into_iter().find(|m| models::is_downloaded(m)) {
                     if let Ok(mut c) = state.cleaner.lock() {
-                        c.start_worker(&models::model_path(info)).ok();
+                        c.start_worker(info.id, &models::model_path(info)).ok();
                     }
                 }
             });

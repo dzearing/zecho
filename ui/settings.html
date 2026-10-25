@@ -736,10 +736,14 @@
     document.getElementById("language-select").addEventListener("change", async (e) => {
       settings.language = e.target.value;
       try {
-        const newModelId = await invoke("switch_language", { language: settings.language });
-        if (newModelId) {
-          settings.active_whisper_model = newModelId;
-          currentWhisperModel = newModelId;
+        const switched = await invoke("switch_language", { language: settings.language });
+        if (switched.whisper) {
+          settings.active_whisper_model = switched.whisper;
+          currentWhisperModel = switched.whisper;
+        }
+        if (switched.cleanup) {
+          settings.active_cleanup_model = switched.cleanup;
+          currentCleanupModel = switched.cleanup;
         }
       } catch (err) {
         console.error("Language switch error:", err);
@@ -747,11 +751,13 @@
       saveSettings();
       await loadModels();
 
-      // Auto-download the needed whisper model if not yet downloaded
+      // Auto-download the models the new language needs if not yet downloaded
       const models = await invoke("list_models");
-      const needed = models.find((m) => m.id === currentWhisperModel);
-      if (needed && !needed.downloaded && !(needed.id in activeDownloads)) {
-        downloadModel(needed.id);
+      for (const id of [currentWhisperModel, currentCleanupModel]) {
+        const needed = models.find((m) => m.id === id);
+        if (needed && !needed.downloaded && !(needed.id in activeDownloads)) {
+          downloadModel(needed.id);
+        }
       }
     });
 

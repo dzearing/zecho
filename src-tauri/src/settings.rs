@@ -68,7 +68,7 @@ impl Default for Settings {
             writing_style: WritingStyle::default(),
             cleanup_level: CleanupLevel::default(),
             custom_prompt: None,
-            active_whisper_model: "whisper-base-en".to_string(),
+            active_whisper_model: crate::models::default_whisper_model().id.to_string(),
             active_cleanup_model: "qwen25-1.5b".to_string(),
             setup_complete: false,
             pill_x_pct: None,

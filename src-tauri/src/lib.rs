@@ -455,15 +455,16 @@ struct SetupStatus {
 }
 
 #[tauri::command]
-fn check_setup() -> SetupStatus {
-    let whisper = models::default_whisper_model();
+fn check_setup(state: tauri::State<'_, AppState>) -> SetupStatus {
+    let active_id = state.settings.lock().map(|s| s.active_whisper_model.clone()).unwrap_or_default();
+    let whisper_ready = models::speech_model_candidates(&active_id).into_iter().any(models::is_downloaded);
     let cleanup_candidates = ["gemma4-e2b", "gemma4-e4b", "qwen25-1.5b", "qwen25-3b"];
     let cleanup_ready = cleanup_candidates
         .iter()
         .any(|id| models::get_model(id).map(|m| models::is_downloaded(m)).unwrap_or(false));
 
     SetupStatus {
-        whisper_ready: models::is_downloaded(whisper),
+        whisper_ready,
         cleanup_ready,
         whisper_downloading: false,
         cleanup_downloading: false,
@@ -473,22 +474,49 @@ fn check_setup() -> SetupStatus {
 #[tauri::command]
 fn setup_download_models(app: tauri::AppHandle) {
     std::thread::spawn(move || {
-        let whisper = models::default_whisper_model();
-        if !models::is_downloaded(whisper) {
-            app.emit("setup-progress", "Downloading speech model...").ok();
-            match models::download_model_blocking(whisper, |_, _| {}) {
-                Ok(_) => {
-                    app.emit("setup-progress", "Speech model ready").ok();
-                    {
-                        let state = app.state::<AppState>();
-                        let mut t = state.transcriber.lock().unwrap();
-                        t.load_model(&models::model_path(whisper)).ok();
+        let state = app.state::<AppState>();
+        let active_id = state.settings.lock().map(|s| s.active_whisper_model.clone()).unwrap_or_default();
+        if !models::speech_model_candidates(&active_id).into_iter().any(models::is_downloaded) {
+            // Try the default (Bark where supported); if it can't be downloaded or prepared, use Whisper base.en.
+            let mut fallbacks = vec![models::default_whisper_model()];
+            fallbacks.extend(models::get_model("whisper-base-en").filter(|m| m.id != fallbacks[0].id));
+            let mut last_err = String::new();
+            let mut ready = false;
+            for info in fallbacks {
+                app.emit("setup-progress", "Downloading speech model...").ok();
+                let path = match models::download_model_blocking(info, |_, _| {}) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Setup: download of {} failed: {}", info.id, e);
+                        last_err = e;
+                        continue;
+                    }
+                };
+                if info.engine == models::Engine::Bark {
+                    app.emit("setup-progress", "Preparing speech model for this Mac (a few minutes)...").ok();
+                }
+                match transcribe::open_engine(&path) {
+                    Ok(engine) => {
+                        if let Ok(mut t) = state.transcriber.lock() {
+                            t.set_engine(engine);
+                        }
+                        if let Ok(mut s) = state.settings.lock() {
+                            s.active_whisper_model = info.id.to_string();
+                            s.save().ok();
+                        }
+                        app.emit("setup-progress", "Speech model ready").ok();
+                        ready = true;
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("Setup: loading {} failed: {}", info.id, e);
+                        last_err = e;
                     }
                 }
-                Err(e) => {
-                    app.emit("setup-error", &format!("Failed to download speech model: {}", e)).ok();
-                    return;
-                }
+            }
+            if !ready {
+                app.emit("setup-error", &format!("Failed to download speech model: {}", last_err)).ok();
+                return;
             }
         }
 
@@ -1123,10 +1151,9 @@ fn init_models_async(app_handle: tauri::AppHandle) {
     std::thread::spawn(move || {
         let state = app_handle.state::<AppState>();
         let active_id = state.settings.lock().map(|s| s.active_whisper_model.clone()).unwrap_or_default();
-        // Load the speech model the user chose, falling back to the default if it is missing or fails.
-        let candidates = [models::get_model(&active_id), Some(models::default_whisper_model())];
-        for info in candidates.into_iter().flatten() {
-            if !models::is_downloaded(info) || !models::is_supported(info) {
+        // Load the speech model the user chose, falling back to the default, then Whisper base.en.
+        for info in models::speech_model_candidates(&active_id) {
+            if !models::is_downloaded(info) {
                 continue;
             }
             // Open outside the lock: if Core ML has dropped Bark's cache this takes minutes.

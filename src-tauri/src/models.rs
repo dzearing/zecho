@@ -72,7 +72,7 @@ pub const AVAILABLE_MODELS: &[ModelInfo] = &[
     ModelInfo {
         id: "whisper-base-en",
         name: "Balanced",
-        description: "Recommended — accurate and fast for everyday use.",
+        description: "Accurate and fast for everyday use.",
         size_mb: 142,
         quality_score: 8,
         speed_score: 8,
@@ -245,8 +245,29 @@ pub fn is_supported(info: &ModelInfo) -> bool {
     }
 }
 
+/// The English speech model for new installs: Bark where the Mac can run it, else Whisper base.en.
 pub fn default_whisper_model() -> &'static ModelInfo {
-    get_model("whisper-base-en").unwrap()
+    let bark = get_model("bark-3-en").unwrap();
+    if is_supported(bark) {
+        bark
+    } else {
+        get_model("whisper-base-en").unwrap()
+    }
+}
+
+/// Speech models to try loading, best first: the user's choice, the default, then Whisper base.en,
+/// which existing installs already have, so upgrading never forces a download.
+pub fn speech_model_candidates(active_id: &str) -> Vec<&'static ModelInfo> {
+    let mut out: Vec<&'static ModelInfo> = Vec::new();
+    for info in [get_model(active_id), Some(default_whisper_model()), get_model("whisper-base-en")]
+        .into_iter()
+        .flatten()
+    {
+        if is_supported(info) && !out.iter().any(|m| m.id == info.id) {
+            out.push(info);
+        }
+    }
+    out
 }
 
 pub fn whisper_model_for_language(current_id: &str, language: &str) -> String {
@@ -300,7 +321,11 @@ pub fn list_models() -> Vec<ModelStatus> {
         .map(|m| ModelStatus {
             id: m.id.to_string(),
             name: m.name.to_string(),
-            description: m.description.to_string(),
+            description: if m.id == default_whisper_model().id {
+                format!("Recommended — {}", m.description)
+            } else {
+                m.description.to_string()
+            },
             size_mb: m.size_mb,
             quality_score: m.quality_score,
             speed_score: m.speed_score,
@@ -401,6 +426,29 @@ fn download_file(url: &str, dest: &std::path::Path, mut on_progress: impl FnMut(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bark_is_the_default_where_supported() {
+        let expected = if crate::bark::is_supported() { "bark-3-en" } else { "whisper-base-en" };
+        assert_eq!(default_whisper_model().id, expected);
+        let recommended: Vec<_> = list_models()
+            .into_iter()
+            .filter(|m| m.model_type == ModelType::Whisper && !m.multilingual && m.description.starts_with("Recommended"))
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(recommended, vec![expected.to_string()]);
+    }
+
+    #[test]
+    fn speech_candidates_fall_back_to_base_en() {
+        let ids = |active: &str| speech_model_candidates(active).iter().map(|m| m.id).collect::<Vec<_>>();
+        let default = default_whisper_model().id;
+        assert_eq!(ids("whisper-small-en")[..2], ["whisper-small-en", default]);
+        assert_eq!(ids("whisper-small-en").last(), Some(&"whisper-base-en"));
+        // Unknown ids (e.g. a model from another build) are skipped, and nothing is listed twice.
+        assert_eq!(ids("whisper-crisperwhisper-small")[0], default);
+        assert_eq!(ids("whisper-base-en").iter().filter(|id| **id == "whisper-base-en").count(), 1);
+    }
 
     #[test]
     fn bark_is_kept_for_english() {

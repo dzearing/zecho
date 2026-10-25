@@ -13,6 +13,12 @@ pub struct ModelInfo {
     pub url: &'static str,
     pub model_type: ModelType,
     pub multilingual: bool,
+    /// Speech models only: which engine runs it. `ModelType::Whisper` means "speech model" to the UI.
+    pub engine: Engine,
+    /// Multi-file models: `(path under url, path under the model's directory)`. When non-empty,
+    /// `filename` names a directory and `url` is the base the remote paths are relative to.
+    #[serde(skip)]
+    pub files: &'static [(&'static str, &'static str)],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -20,6 +26,32 @@ pub enum ModelType {
     Whisper,
     Cleanup,
 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum Engine {
+    Whisper,
+    Bark,
+    Llama,
+}
+
+const BARK_ENCODER_PKG: &str = "BarkEncoder.mlpackage";
+
+/// Core ML package for the Neural Engine, plus the CPU decoder weights and attribution files.
+const BARK_FILES: &[(&str, &str)] = &[
+    ("ane/BarkEncoder.mlpackage/Manifest.json", "BarkEncoder.mlpackage/Manifest.json"),
+    (
+        "ane/BarkEncoder.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+        "BarkEncoder.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+    ),
+    (
+        "ane/BarkEncoder.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+        "BarkEncoder.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+    ),
+    ("ane/decoder.npz", "decoder.npz"),
+    ("ane/vocab.json", "vocab.json"),
+    ("NOTICE", "NOTICE"),
+    ("LICENSE", "LICENSE"),
+];
 
 pub const AVAILABLE_MODELS: &[ModelInfo] = &[
     // Whisper models — English-only (faster for English)
@@ -34,6 +66,8 @@ pub const AVAILABLE_MODELS: &[ModelInfo] = &[
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
         model_type: ModelType::Whisper,
         multilingual: false,
+        engine: Engine::Whisper,
+        files: &[],
     },
     ModelInfo {
         id: "whisper-base-en",
@@ -46,6 +80,8 @@ pub const AVAILABLE_MODELS: &[ModelInfo] = &[
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
         model_type: ModelType::Whisper,
         multilingual: false,
+        engine: Engine::Whisper,
+        files: &[],
     },
     ModelInfo {
         id: "whisper-small-en",
@@ -58,6 +94,24 @@ pub const AVAILABLE_MODELS: &[ModelInfo] = &[
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin",
         model_type: ModelType::Whisper,
         multilingual: false,
+        engine: Engine::Whisper,
+        files: &[],
+    },
+    // Underdog Bark 3.0 (NVIDIA Parakeet TDT 0.6B v3 fine-tune), English only, macOS 15+ on Apple silicon.
+    // Pinned to a repo revision so the files can't change under us. CC-BY-4.0; NOTICE ships with it.
+    ModelInfo {
+        id: "bark-3-en",
+        name: "Bark 3.0",
+        description: "Fastest and most accurate for English. Runs on the Neural Engine. Prepares for a few minutes after download. By Conway Research, CC-BY-4.0.",
+        size_mb: 193,
+        quality_score: 10,
+        speed_score: 10,
+        filename: "bark-3.0-ane",
+        url: "https://huggingface.co/ConwayResearch/Underdog-Bark-3.0/resolve/85db2ad18ab41e534a222ee253c29191d77ed919/coreml",
+        model_type: ModelType::Whisper,
+        multilingual: false,
+        engine: Engine::Bark,
+        files: BARK_FILES,
     },
     // Whisper models — Multilingual
     ModelInfo {
@@ -71,6 +125,8 @@ pub const AVAILABLE_MODELS: &[ModelInfo] = &[
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
         model_type: ModelType::Whisper,
         multilingual: true,
+        engine: Engine::Whisper,
+        files: &[],
     },
     ModelInfo {
         id: "whisper-base-multi",
@@ -83,6 +139,8 @@ pub const AVAILABLE_MODELS: &[ModelInfo] = &[
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
         model_type: ModelType::Whisper,
         multilingual: true,
+        engine: Engine::Whisper,
+        files: &[],
     },
     ModelInfo {
         id: "whisper-small-multi",
@@ -95,6 +153,8 @@ pub const AVAILABLE_MODELS: &[ModelInfo] = &[
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
         model_type: ModelType::Whisper,
         multilingual: true,
+        engine: Engine::Whisper,
+        files: &[],
     },
     // Cleanup models
     ModelInfo {
@@ -108,6 +168,8 @@ pub const AVAILABLE_MODELS: &[ModelInfo] = &[
         url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
         model_type: ModelType::Cleanup,
         multilingual: false,
+        engine: Engine::Llama,
+        files: &[],
     },
     ModelInfo {
         id: "qwen25-3b",
@@ -120,6 +182,8 @@ pub const AVAILABLE_MODELS: &[ModelInfo] = &[
         url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
         model_type: ModelType::Cleanup,
         multilingual: false,
+        engine: Engine::Llama,
+        files: &[],
     },
     ModelInfo {
         id: "gemma4-e2b",
@@ -132,6 +196,8 @@ pub const AVAILABLE_MODELS: &[ModelInfo] = &[
         url: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
         model_type: ModelType::Cleanup,
         multilingual: false,
+        engine: Engine::Llama,
+        files: &[],
     },
     ModelInfo {
         id: "gemma4-e4b",
@@ -144,6 +210,8 @@ pub const AVAILABLE_MODELS: &[ModelInfo] = &[
         url: "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf",
         model_type: ModelType::Cleanup,
         multilingual: false,
+        engine: Engine::Llama,
+        files: &[],
     },
 ];
 
@@ -163,7 +231,18 @@ pub fn model_path(info: &ModelInfo) -> PathBuf {
 }
 
 pub fn is_downloaded(info: &ModelInfo) -> bool {
-    model_path(info).exists()
+    match info.engine {
+        Engine::Bark => crate::bark::is_model_dir(&model_path(info)),
+        _ => model_path(info).exists(),
+    }
+}
+
+/// Whether this machine can run the model at all.
+pub fn is_supported(info: &ModelInfo) -> bool {
+    match info.engine {
+        Engine::Bark => crate::bark::is_supported(),
+        _ => true,
+    }
 }
 
 pub fn default_whisper_model() -> &'static ModelInfo {
@@ -217,6 +296,7 @@ pub struct ModelStatus {
 pub fn list_models() -> Vec<ModelStatus> {
     AVAILABLE_MODELS
         .iter()
+        .filter(|m| is_supported(m))
         .map(|m| ModelStatus {
             id: m.id.to_string(),
             name: m.name.to_string(),
@@ -235,22 +315,73 @@ pub fn download_model_blocking(
     info: &ModelInfo,
     mut on_progress: impl FnMut(u64, u64),
 ) -> Result<PathBuf, String> {
-    use std::io::{Read, Write};
+    if !info.files.is_empty() {
+        return download_dir_blocking(info, on_progress);
+    }
 
     let path = model_path(info);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    let response = reqwest::blocking::get(info.url).map_err(|e| format!("Download failed: {}", e))?;
+    let tmp_path = path.with_extension("tmp");
+    let total = info.size_mb as u64 * 1024 * 1024;
+    download_file(info.url, &tmp_path, |n, len| on_progress(n, len.unwrap_or(total)))?;
+    std::fs::rename(&tmp_path, &path).map_err(|e| format!("Failed to rename: {}", e))?;
+
+    Ok(path)
+}
+
+/// Downloads every file of a multi-file model into `<name>.tmp/`, finishes it (Bark: compiles the
+/// Core ML encoder), then moves it into place so a half-done download never looks installed.
+fn download_dir_blocking(info: &ModelInfo, mut on_progress: impl FnMut(u64, u64)) -> Result<PathBuf, String> {
+    let path = model_path(info);
+    let tmp = path.with_extension("tmp");
+    if tmp.exists() {
+        std::fs::remove_dir_all(&tmp).map_err(|e| e.to_string())?;
+    }
+    let total = info.size_mb as u64 * 1024 * 1024;
+    let mut done: u64 = 0;
+    for (remote, local) in info.files {
+        let dest = tmp.join(local);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let url = format!("{}/{}", info.url, remote);
+        let mut last = 0;
+        download_file(&url, &dest, |n, _| {
+            last = n;
+            on_progress((done + n).min(total), total);
+        })?;
+        done += last;
+    }
+
+    if info.engine == Engine::Bark {
+        let pkg = tmp.join(BARK_ENCODER_PKG);
+        crate::bark::compile_encoder(&pkg, &tmp.join(crate::bark::ENCODER_DIR))?;
+        std::fs::remove_dir_all(&pkg).ok();
+    }
+
+    if path.exists() {
+        std::fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| format!("Failed to rename: {}", e))?;
+    on_progress(total, total);
+    Ok(path)
+}
+
+/// Streams `url` to `dest`, reporting `(bytes so far, content length)`.
+fn download_file(url: &str, dest: &std::path::Path, mut on_progress: impl FnMut(u64, Option<u64>)) -> Result<(), String> {
+    use std::io::{Read, Write};
+
+    let response = reqwest::blocking::get(url).map_err(|e| format!("Download failed: {}", e))?;
 
     if !response.status().is_success() {
         return Err(format!("Download failed with status: {}", response.status()));
     }
 
-    let total = response.content_length().unwrap_or(info.size_mb as u64 * 1024 * 1024);
-    let tmp_path = path.with_extension("tmp");
-    let mut file = std::fs::File::create(&tmp_path).map_err(|e| format!("Failed to create file: {}", e))?;
+    let total = response.content_length();
+    let mut file = std::fs::File::create(dest).map_err(|e| format!("Failed to create file: {}", e))?;
     let mut downloaded: u64 = 0;
     let mut reader = response;
     let mut buf = [0u8; 65536];
@@ -264,8 +395,59 @@ pub fn download_model_blocking(
     }
 
     file.flush().map_err(|e| e.to_string())?;
-    drop(file);
-    std::fs::rename(&tmp_path, &path).map_err(|e| format!("Failed to rename: {}", e))?;
+    Ok(())
+}
 
-    Ok(path)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bark_is_kept_for_english() {
+        assert_eq!(whisper_model_for_language("bark-3-en", "en"), "bark-3-en");
+    }
+
+    #[test]
+    fn bark_falls_back_to_multilingual_whisper() {
+        // Bark is English-only, so another language needs a multilingual Whisper model.
+        assert_eq!(whisper_model_for_language("bark-3-en", "fr"), "whisper-base-multi");
+    }
+
+    #[test]
+    fn whisper_tiers_still_switch() {
+        assert_eq!(whisper_model_for_language("whisper-small-en", "de"), "whisper-small-multi");
+        assert_eq!(whisper_model_for_language("whisper-tiny-multi", "en"), "whisper-tiny-en");
+    }
+
+    #[test]
+    fn bark_downloads_into_a_directory() {
+        let bark = get_model("bark-3-en").unwrap();
+        assert_eq!(bark.engine, Engine::Bark);
+        assert!(!bark.multilingual);
+        assert!(bark.url.contains("/resolve/") && !bark.url.contains("/main/"), "pin a revision");
+        let locals: Vec<&str> = bark.files.iter().map(|(_, l)| *l).collect();
+        for f in [crate::bark::DECODER_FILE, crate::bark::VOCAB_FILE, "NOTICE"] {
+            assert!(locals.contains(&f), "missing {}", f);
+        }
+        assert!(locals.iter().any(|l| l.starts_with(BARK_ENCODER_PKG)));
+    }
+
+    /// Downloads and installs Bark into the app's model directory, as the Settings download does.
+    /// Network-heavy (~200 MB): `cargo test bark_download -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bark_download() {
+        let bark = get_model("bark-3-en").unwrap();
+        let mut last = 0;
+        let path = download_model_blocking(bark, |n, total| {
+            let pct = n * 100 / total;
+            if pct >= last + 20 {
+                last = pct;
+                eprintln!("{}%", pct);
+            }
+        })
+        .unwrap();
+        assert!(is_downloaded(bark), "{} incomplete", path.display());
+        assert!(!path.join(BARK_ENCODER_PKG).exists(), "the .mlpackage should be removed after compiling");
+    }
 }

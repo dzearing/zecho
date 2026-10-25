@@ -53,7 +53,8 @@ ui/              # Frontend (HTML/CSS/JS)
 src-tauri/       # Rust backend (Tauri v2)
   src/
     audio.rs       # Audio capture (cpal)
-    transcribe.rs  # Whisper speech-to-text
+    transcribe.rs  # Speech-to-text engine selection (Whisper / Bark)
+    bark.rs        # Bark 3.0 on Core ML (Neural Engine)
     cleanup.rs     # Qwen LLM text cleanup
     hotkey.rs      # FN key listener (macOS)
     history.rs     # Clipboard history storage
@@ -67,6 +68,12 @@ docs/            # Landing page (GitHub Pages)
 ## Download
 
 Get the latest release: [github.com/dzearing/zecho/releases/latest](https://github.com/dzearing/zecho/releases/latest)
+
+## Speech models
+
+Zecho uses [Whisper](https://github.com/ggerganov/whisper.cpp) by default. On macOS 15+ with Apple silicon, English users can opt into **Bark 3.0** in Settings. It runs on the Neural Engine and is faster and more accurate than Whisper base.en, but it's English-only, and after download it takes a few minutes to prepare for your Mac.
+
+Bark 3.0 is [Underdog Bark 3.0](https://huggingface.co/ConwayResearch/Underdog-Bark-3.0) by Conway Research, derived from [nvidia/parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) (© NVIDIA Corporation) and [moondream/parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) (© Moondream). It's used under [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/); Zecho downloads the model unmodified, along with its NOTICE and LICENSE.
 
 ## License
 

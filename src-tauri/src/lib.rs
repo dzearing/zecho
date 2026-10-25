@@ -3,6 +3,7 @@ extern crate objc;
 
 mod accessibility;
 mod audio;
+mod bark;
 pub mod cleanup;
 mod history;
 mod hotkey;
@@ -295,13 +296,27 @@ fn download_model(model_id: String, app: tauri::AppHandle) -> Result<(), String>
                     app2.emit("model-download-progress", (&id, pct)).ok();
                 }
             }) {
-                Ok(_) => {
+                Ok(path) => {
                     eprintln!("Download complete: {}", info.name);
+                    if info.engine == models::Engine::Bark {
+                        // The first load specializes the encoder for this Mac's Neural Engine, which
+                        // takes minutes; do it now so selecting the model later is instant.
+                        app.emit("model-download-preparing", &info.id).ok();
+                        let t0 = std::time::Instant::now();
+                        match bark::BarkModel::load(&path) {
+                            Ok(_) => eprintln!("Bark prepared in {:.1}s", t0.elapsed().as_secs_f64()),
+                            Err(e) => {
+                                eprintln!("Bark prepare failed: {}", e);
+                                app.emit("model-download-error", (&info.id, &e)).ok();
+                                return;
+                            }
+                        }
+                    }
                     app.emit("model-download-complete", &info.id).ok();
                 }
                 Err(e) => {
                     eprintln!("Download failed: {} - {}", info.name, e);
-                    app.emit("model-download-error", &e).ok();
+                    app.emit("model-download-error", (&info.id, &e)).ok();
                 }
             }
         }
@@ -325,11 +340,12 @@ fn load_cleanup_model(model_id: String, state: tauri::State<'_, AppState>) -> Re
 fn load_whisper_model_cmd(model_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let info = models::get_model(&model_id).ok_or("Unknown model")?;
     let path = models::model_path(info);
-    if !path.exists() {
+    if !models::is_downloaded(info) {
         return Err(format!("Model not downloaded: {}", info.name));
     }
-    let mut transcriber = state.transcriber.lock().map_err(|e| e.to_string())?;
-    transcriber.load_model(&path)
+    let engine = transcribe::open_engine(&path)?;
+    state.transcriber.lock().map_err(|e| e.to_string())?.set_engine(engine);
+    Ok(())
 }
 
 #[tauri::command]
@@ -370,9 +386,9 @@ fn switch_language(language: String, state: tauri::State<'_, AppState>) -> Resul
 
     let info = models::get_model(&target_id).ok_or("Unknown model")?;
     let path = models::model_path(info);
-    if path.exists() {
-        let mut transcriber = state.transcriber.lock().map_err(|e| e.to_string())?;
-        transcriber.load_model(&path)?;
+    if models::is_downloaded(info) {
+        let engine = transcribe::open_engine(&path)?;
+        state.transcriber.lock().map_err(|e| e.to_string())?.set_engine(engine);
     }
 
     Ok(Some(target_id))
@@ -1106,11 +1122,23 @@ fn unregister_escape_shortcut(app: &tauri::AppHandle) {
 fn init_models_async(app_handle: tauri::AppHandle) {
     std::thread::spawn(move || {
         let state = app_handle.state::<AppState>();
-        let whisper_model = models::default_whisper_model();
-        let whisper_path = models::model_path(whisper_model);
-        if whisper_path.exists() {
-            if let Ok(mut t) = state.transcriber.lock() {
-                t.load_model(&whisper_path).ok();
+        let active_id = state.settings.lock().map(|s| s.active_whisper_model.clone()).unwrap_or_default();
+        // Load the speech model the user chose, falling back to the default if it is missing or fails.
+        let candidates = [models::get_model(&active_id), Some(models::default_whisper_model())];
+        for info in candidates.into_iter().flatten() {
+            if !models::is_downloaded(info) || !models::is_supported(info) {
+                continue;
+            }
+            // Open outside the lock: if Core ML has dropped Bark's cache this takes minutes.
+            match transcribe::open_engine(&models::model_path(info)) {
+                Ok(engine) => {
+                    if let Ok(mut t) = state.transcriber.lock() {
+                        t.set_engine(engine);
+                    }
+                    eprintln!("Loaded speech model: {}", info.id);
+                    break;
+                }
+                Err(e) => eprintln!("Failed to load speech model {}: {}", info.id, e),
             }
         }
     });

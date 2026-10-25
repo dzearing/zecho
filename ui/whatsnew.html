@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>What's New in Zecho</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #1c1c1e;
+      --surface: #2c2c2e;
+      --surface-hover: #3a3a3c;
+      --text: #f5f5f7;
+      --text-secondary: #98989d;
+      --accent: #6c5ce7;
+      --accent-hover: #7d6ef0;
+      --success: #30d158;
+      --danger: #ff453a;
+      --border: rgba(255, 255, 255, 0.08);
+      --radius: 14px;
+      --radius-sm: 8px;
+    }
+
+    body {
+      background: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", sans-serif;
+      color: var(--text);
+      -webkit-user-select: none;
+      user-select: none;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .container {
+      flex: 1;
+      padding: 22px 24px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 0;
+      overflow-y: auto;
+    }
+
+    .icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #6c5ce7, #4a3fc7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      flex-shrink: 0;
+      align-self: center;
+    }
+
+    .title {
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+      text-align: center;
+    }
+
+    .subtitle {
+      font-size: 13px;
+      color: var(--text-secondary);
+      text-align: center;
+      line-height: 1.5;
+    }
+
+    .offer {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .offer-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .offer-kind {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-secondary);
+    }
+
+    .offer-name {
+      font-size: 15px;
+      font-weight: 650;
+    }
+
+    .offer-body {
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+    }
+
+    .offer-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 4px;
+    }
+
+    .offer-current {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .offer-status {
+      font-size: 12px;
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+    }
+    .offer-status.done { color: var(--success); font-weight: 600; }
+    .offer-status.error { color: var(--danger); }
+
+    .note {
+      font-size: 12px;
+      color: var(--text-secondary);
+      text-align: center;
+      line-height: 1.5;
+    }
+
+    .note a { color: var(--accent); cursor: pointer; text-decoration: none; }
+    .note a:hover { text-decoration: underline; }
+
+    .footer {
+      padding: 12px 24px 16px;
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      flex-shrink: 0;
+      border-top: 1px solid var(--border);
+    }
+
+    button {
+      padding: 8px 18px;
+      border-radius: var(--radius-sm);
+      border: none;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      font-family: inherit;
+      min-width: 88px;
+      white-space: nowrap;
+    }
+
+    button.primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    button.primary:hover { background: var(--accent-hover); }
+    button.primary:disabled {
+      background: var(--surface-hover);
+      color: var(--text-secondary);
+      cursor: default;
+    }
+
+    button.secondary {
+      background: var(--surface);
+      color: var(--text);
+    }
+    button.secondary:hover { background: var(--surface-hover); }
+  </style>
+</head>
+<body>
+  <div class="container" id="container">
+    <div class="icon">✨</div>
+    <div class="title">What's new in Zecho</div>
+    <div class="subtitle">New default models make dictation faster and more accurate. Switch now, or keep what you have.</div>
+    <div id="offers"></div>
+  </div>
+  <div class="footer">
+    <div class="note" style="margin-right:auto;align-self:center;text-align:left">Change any time in <a id="open-settings">Settings</a></div>
+    <button class="secondary" id="close-btn">Keep my current models</button>
+  </div>
+
+  <script>
+    const { invoke } = window.__TAURI__.core;
+    const { listen } = window.__TAURI__.event;
+
+    const COPY = {
+      speech: {
+        kind: "Speech recognition",
+        body: "Runs on your Mac's Neural Engine. In our tests it made under half Whisper Base's mistakes and was several times faster. English only.",
+        note: "Takes a few minutes to prepare after downloading; you can keep dictating meanwhile.",
+      },
+      cleanup: {
+        kind: "Text cleanup",
+        body: "Built just for tidying dictation: done in a fraction of a second instead of several. Follows your writing style, not cleanup level or custom instructions.",
+        note: "",
+      },
+    };
+
+    // model id -> { offer, state: "idle" | "downloading" | "preparing" | "done" | "error", pct, error }
+    const offers = {};
+
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function sizeLabel(mb) {
+      return mb >= 1000 ? (mb / 1024).toFixed(1) + " GB" : mb + " MB";
+    }
+
+    function render() {
+      const el = document.getElementById("offers");
+      el.style.display = "flex";
+      el.style.flexDirection = "column";
+      el.style.gap = "12px";
+      el.innerHTML = Object.values(offers).map(({ offer, state, pct, error }) => {
+        const copy = COPY[offer.kind];
+        let action;
+        if (state === "done") {
+          action = `<span class="offer-status done">✓ Now using ${escapeHtml(offer.name)}</span>`;
+        } else if (state === "downloading") {
+          action = `<span class="offer-status">Downloading… ${pct}%</span>`;
+        } else if (state === "preparing") {
+          action = `<span class="offer-status">Preparing for this Mac…</span>`;
+        } else if (state === "switching") {
+          action = `<span class="offer-status">Switching…</span>`;
+        } else {
+          const label = offer.downloaded ? "Switch" : `Switch (${sizeLabel(offer.size_mb)})`;
+          action = (state === "error" ? `<span class="offer-status error">${escapeHtml(error)}</span>` : "")
+            + `<button class="primary" data-switch="${offer.model_id}">${state === "error" ? "Retry" : label}</button>`;
+        }
+        const note = copy.note && state !== "done" ? `<div class="offer-body">${copy.note}</div>` : "";
+        return `
+          <div class="offer">
+            <div class="offer-head">
+              <div class="offer-name">${escapeHtml(offer.name)}</div>
+              <div class="offer-kind">${copy.kind}</div>
+            </div>
+            <div class="offer-body">${copy.body}</div>
+            ${note}
+            <div class="offer-foot">
+              <span class="offer-current">${state === "done" ? "" : "Currently: " + escapeHtml(offer.current_name)}</span>
+              <span style="display:flex;align-items:center;gap:10px">${action}</span>
+            </div>
+          </div>`;
+      }).join("");
+
+      document.querySelectorAll("[data-switch]").forEach((btn) => {
+        btn.addEventListener("click", () => switchTo(btn.dataset.switch));
+      });
+
+      // Until something is switched, closing means keeping the current models.
+      const started = Object.values(offers).some((o) => o.state !== "idle" && o.state !== "error");
+      const closeBtn = document.getElementById("close-btn");
+      closeBtn.textContent = started ? "Done" : "Keep my current models";
+      closeBtn.className = started ? "primary" : "secondary";
+    }
+
+    function setState(id, state, extra = {}) {
+      if (!(id in offers)) return;
+      Object.assign(offers[id], { state }, extra);
+      render();
+    }
+
+    async function activate(id) {
+      setState(id, "switching");
+      try {
+        await invoke("use_model", { modelId: id });
+        setState(id, "done");
+      } catch (err) {
+        setState(id, "error", { error: String(err) });
+      }
+    }
+
+    async function switchTo(id) {
+      const entry = offers[id];
+      if (entry.offer.downloaded) {
+        activate(id);
+        return;
+      }
+      setState(id, "downloading", { pct: 0 });
+      try {
+        await invoke("download_model", { modelId: id });
+      } catch (err) {
+        setState(id, "error", { error: String(err) });
+      }
+    }
+
+    listen("model-download-progress", (event) => {
+      const [id, pct] = event.payload;
+      if (offers[id] && offers[id].state === "downloading") setState(id, "downloading", { pct });
+    });
+    listen("model-download-preparing", (event) => {
+      if (offers[event.payload]) setState(event.payload, "preparing");
+    });
+    listen("model-download-complete", (event) => {
+      const id = event.payload;
+      if (offers[id] && (offers[id].state === "downloading" || offers[id].state === "preparing")) {
+        offers[id].offer.downloaded = true;
+        activate(id);
+      }
+    });
+    listen("model-download-error", (event) => {
+      const [id, err] = event.payload;
+      if (offers[id]) setState(id, "error", { error: "Download failed" + (err ? ": " + err : "") });
+    });
+
+    // Downloads already started keep going and switch over when they finish.
+    document.getElementById("close-btn").addEventListener("click", () => invoke("dismiss_whats_new"));
+    document.getElementById("open-settings").addEventListener("click", () => invoke("open_settings"));
+
+    (async () => {
+      try {
+        const list = await invoke("get_whats_new");
+        for (const offer of list) offers[offer.model_id] = { offer, state: "idle", pct: 0 };
+      } catch (err) {
+        console.error("Failed to load what's new:", err);
+      }
+      render();
+    })();
+  </script>
+</body>
+</html>

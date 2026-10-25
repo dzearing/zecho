@@ -13,7 +13,7 @@ const TAG_FRAGMENTS: &[&str] = &["<start_of", "<end_of", "<|im_", "<|endo"];
 fn parse_response(response: &str, raw_text: &str) -> ParseResult {
     let mut result = response.trim().replace("\\n", "\n");
 
-    let stop_markers = ["<end_of_turn>", "<start_of_turn>", "<|im_end|>", "<|endoftext|>"];
+    let stop_markers = ["<end_of_turn>", "<start_of_turn>", "<|im_end|>", "<|endoftext|>", "\ntext:"];
     if let Some(pos) = stop_markers.iter().filter_map(|m| result.find(m)).min() {
         result.truncate(pos);
     }
@@ -43,14 +43,22 @@ pub struct CleanupRequest {
 
 pub struct TextCleaner {
     sender: Option<mpsc::Sender<CleanupRequest>>,
+    /// The model the worker is running. Prompts are built for it, not for the settings, so
+    /// they can't drift apart while a newly selected model is still downloading.
+    model_id: Option<String>,
 }
 
 impl TextCleaner {
     pub fn new() -> Self {
-        Self { sender: None }
+        Self { sender: None, model_id: None }
     }
 
-    pub fn start_worker(&mut self, model_path: &Path) -> Result<(), String> {
+    pub fn model_id(&self) -> Option<&str> {
+        self.model_id.as_deref()
+    }
+
+    pub fn start_worker(&mut self, model_id: &str, model_path: &Path) -> Result<(), String> {
+        self.model_id = Some(model_id.to_string());
         let path = model_path.to_path_buf();
         let (tx, rx) = mpsc::channel::<CleanupRequest>();
 
@@ -150,7 +158,6 @@ impl TextCleaner {
         style: &WritingStyle,
         level: &CleanupLevel,
         custom_prompt: Option<&str>,
-        model_id: &str,
         language: &str,
     ) -> Result<String, String> {
         if *level == CleanupLevel::None {
@@ -164,7 +171,7 @@ impl TextCleaner {
                 style: style.clone(),
                 level: level.clone(),
                 custom_prompt: custom_prompt.map(|s| s.to_string()),
-                model_id: model_id.to_string(),
+                model_id: self.model_id.clone().unwrap_or_default(),
                 language: language.to_string(),
                 reply: reply_tx,
             };
@@ -194,6 +201,17 @@ pub fn build_prompt(
     model_id: &str,
     language: &str,
 ) -> String {
+    // Spokenly was trained on fixed "key: value" lines rather than instructions; its only
+    // setting that maps onto Zecho's is the tone.
+    if model_id.starts_with("spokenly") {
+        let tone = match style {
+            WritingStyle::Formal => "formal",
+            WritingStyle::Casual => "casual",
+            WritingStyle::VeryCasual => "very casual",
+        };
+        return format!("tone: {}\ntext: {}\nout:", tone, raw_text);
+    }
+
     let lang_name = match language {
         "zh" => "Chinese",
         "es" => "Spanish",
@@ -394,3 +412,22 @@ fn strip_model_artifacts(text: &str) -> String {
     s.trim().to_string()
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spokenly_gets_its_trained_prompt() {
+        let p = build_prompt("um hi there", &WritingStyle::Formal, &CleanupLevel::High, Some("be terse"), "spokenly-cleanup-1", "en");
+        assert_eq!(p, "tone: formal\ntext: um hi there\nout:");
+    }
+
+    #[test]
+    fn spokenly_output_stops_at_the_next_prompt() {
+        match parse_response(" Hi there.\ntext: something else", "um hi there") {
+            ParseResult::Ok(t) => assert_eq!(t, "Hi there."),
+            _ => panic!("expected Ok"),
+        }
+    }
+}

@@ -1,8 +1,14 @@
+use crate::bark::BarkModel;
 use std::path::PathBuf;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+pub enum Engine {
+    Whisper(WhisperContext),
+    Bark(BarkModel),
+}
+
 pub struct Transcriber {
-    ctx: Option<WhisperContext>,
+    engine: Option<Engine>,
 }
 
 unsafe impl Send for Transcriber {}
@@ -10,32 +16,37 @@ unsafe impl Sync for Transcriber {}
 
 impl Transcriber {
     pub fn new() -> Self {
-        Self { ctx: None }
+        Self { engine: None }
     }
 
-    pub fn load_model(&mut self, model_path: &std::path::Path) -> Result<(), String> {
-        let ctx = WhisperContext::new_with_params(
-            model_path.to_str().ok_or("Invalid model path")?,
-            WhisperContextParameters::default(),
-        )
-        .map_err(|e| format!("Failed to load whisper model: {}", e))?;
-        self.ctx = Some(ctx);
-        Ok(())
+    /// Swaps in an engine opened with `open_engine`, so slow loads don't need the transcriber lock.
+    pub fn set_engine(&mut self, engine: Engine) {
+        self.engine = Some(engine);
     }
 
     pub fn is_loaded(&self) -> bool {
-        self.ctx.is_some()
+        self.engine.is_some()
     }
 
     pub fn transcribe(&self, audio_samples: &[f32], language: &str) -> Result<String, String> {
-        let ctx = self
-            .ctx
+        let engine = self
+            .engine
             .as_ref()
-            .ok_or("Whisper model not loaded. Check Settings for model status.")?;
+            .ok_or("Speech model not loaded. Check Settings for model status.")?;
 
         if audio_samples.is_empty() {
             return Ok(String::new());
         }
+
+        let ctx = match engine {
+            Engine::Whisper(ctx) => ctx,
+            Engine::Bark(model) => {
+                if language != "en" {
+                    return Err("Bark is English-only. Choose a multilingual speech model in Settings.".to_string());
+                }
+                return model.transcribe(audio_samples);
+            }
+        };
 
         let mut state = ctx.create_state().map_err(|e| format!("Whisper state error: {}", e))?;
 
@@ -75,4 +86,17 @@ impl Transcriber {
     pub fn default_model_path() -> PathBuf {
         Self::model_dir().join("ggml-base.en.bin")
     }
+}
+
+/// Opens a Whisper ggml file, or a Bark model directory.
+pub fn open_engine(model_path: &std::path::Path) -> Result<Engine, String> {
+    if model_path.is_dir() {
+        return Ok(Engine::Bark(BarkModel::load(model_path)?));
+    }
+    let ctx = WhisperContext::new_with_params(
+        model_path.to_str().ok_or("Invalid model path")?,
+        WhisperContextParameters::default(),
+    )
+    .map_err(|e| format!("Failed to load whisper model: {}", e))?;
+    Ok(Engine::Whisper(ctx))
 }

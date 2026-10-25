@@ -736,10 +736,14 @@
     document.getElementById("language-select").addEventListener("change", async (e) => {
       settings.language = e.target.value;
       try {
-        const newModelId = await invoke("switch_language", { language: settings.language });
-        if (newModelId) {
-          settings.active_whisper_model = newModelId;
-          currentWhisperModel = newModelId;
+        const switched = await invoke("switch_language", { language: settings.language });
+        if (switched.whisper) {
+          settings.active_whisper_model = switched.whisper;
+          currentWhisperModel = switched.whisper;
+        }
+        if (switched.cleanup) {
+          settings.active_cleanup_model = switched.cleanup;
+          currentCleanupModel = switched.cleanup;
         }
       } catch (err) {
         console.error("Language switch error:", err);
@@ -747,11 +751,13 @@
       saveSettings();
       await loadModels();
 
-      // Auto-download the needed whisper model if not yet downloaded
+      // Auto-download the models the new language needs if not yet downloaded
       const models = await invoke("list_models");
-      const needed = models.find((m) => m.id === currentWhisperModel);
-      if (needed && !needed.downloaded && !(needed.id in activeDownloads)) {
-        downloadModel(needed.id);
+      for (const id of [currentWhisperModel, currentCleanupModel]) {
+        const needed = models.find((m) => m.id === id);
+        if (needed && !needed.downloaded && !(needed.id in activeDownloads)) {
+          downloadModel(needed.id);
+        }
       }
     });
 
@@ -955,7 +961,8 @@
           const btn = document.getElementById("btn-" + id);
           const pctEl = document.getElementById("pct-" + id);
           if (btn) { btn.textContent = "Cancel"; btn.className = "model-btn cancel"; }
-          if (pctEl) pctEl.textContent = pct + "%";
+          if (pctEl) pctEl.textContent = typeof pct === "number" ? pct + "%" : pct;
+          if (btn && typeof pct !== "number") btn.style.display = "none";
         }
 
         document.querySelectorAll("[data-download]").forEach(function(btn) {
@@ -971,6 +978,8 @@
 
     async function downloadModel(modelId) {
       console.log("[settings] downloadModel called:", modelId);
+      // The backend has no cancel; a second click would start a duplicate download.
+      if (modelId in activeDownloads) return;
       activeDownloads[modelId] = 0;
       var btn = document.getElementById("btn-" + modelId);
       var pct = document.getElementById("pct-" + modelId);
@@ -1013,18 +1022,36 @@
       var el = document.getElementById("pct-" + id);
       if (el) el.textContent = pct + "%";
     });
+    listen("model-download-preparing", (event) => {
+      var id = event.payload;
+      if (id in activeDownloads) activeDownloads[id] = "Preparing for this Mac…";
+      var el = document.getElementById("pct-" + id);
+      if (el) el.textContent = "Preparing for this Mac…";
+      var btn = document.getElementById("btn-" + id);
+      if (btn) btn.style.display = "none";
+    });
     listen("model-download-complete", (event) => {
       console.log("[settings] download complete:", event.payload);
       delete activeDownloads[event.payload];
       loadModels();
     });
     listen("model-download-error", (event) => {
-      console.error("[settings] download error:", event.payload);
-      delete activeDownloads[event.payload];
+      var [id, err] = event.payload;
+      console.error("[settings] download error:", id, err);
+      delete activeDownloads[id];
       loadModels();
     });
 
     loadSettings().then(() => loadModels());
+
+    // Other windows (What's new, setup) change settings too. Keep this window's copy current so
+    // saving an unrelated setting here doesn't write back stale model choices.
+    listen("settings-changed", (event) => {
+      settings = event.payload;
+      currentWhisperModel = settings.active_whisper_model;
+      currentCleanupModel = settings.active_cleanup_model;
+      loadModels();
+    });
 
     // ── Footer version ──
     (async () => {

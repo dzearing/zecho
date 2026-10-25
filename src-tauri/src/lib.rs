@@ -3,6 +3,7 @@ extern crate objc;
 
 mod accessibility;
 mod audio;
+mod bark;
 pub mod cleanup;
 mod history;
 mod hotkey;
@@ -129,17 +130,17 @@ fn process_recording(state: &AppState, samples: Vec<f32>) -> Result<String, Stri
     }
 
     let t1 = Instant::now();
-    let (style, level, custom_prompt, cleanup_model_id) = {
+    let (style, level, custom_prompt) = {
         let s = state.settings.lock().map_err(|e| e.to_string())?;
-        (s.writing_style.clone(), s.cleanup_level.clone(), s.custom_prompt.clone(), s.active_cleanup_model.clone())
+        (s.writing_style.clone(), s.cleanup_level.clone(), s.custom_prompt.clone())
     };
     let cleaner = state.cleaner.lock().map_err(|e| e.to_string())?;
+    let cleanup_model = cleaner.model_id().unwrap_or_default().to_string();
     let text = match cleaner.clean(
         &raw_text,
         &style,
         &level,
         custom_prompt.as_deref(),
-        &cleanup_model_id,
         &language,
     ) {
         Ok(t) => t,
@@ -156,7 +157,6 @@ fn process_recording(state: &AppState, samples: Vec<f32>) -> Result<String, Stri
 
     let settings2 = state.settings.lock().map_err(|e| e.to_string())?;
     let stt_model = settings2.active_whisper_model.clone();
-    let cleanup_model = settings2.active_cleanup_model.clone();
     drop(settings2);
 
     let mut history = state.history.lock().map_err(|e| e.to_string())?;
@@ -295,13 +295,36 @@ fn download_model(model_id: String, app: tauri::AppHandle) -> Result<(), String>
                     app2.emit("model-download-progress", (&id, pct)).ok();
                 }
             }) {
-                Ok(_) => {
+                Ok(path) => {
                     eprintln!("Download complete: {}", info.name);
+                    if info.engine == models::Engine::Bark {
+                        // The first load specializes the encoder for this Mac's Neural Engine, which
+                        // takes minutes; do it now so selecting the model later is instant.
+                        app.emit("model-download-preparing", &info.id).ok();
+                        let t0 = std::time::Instant::now();
+                        match bark::BarkModel::load(&path) {
+                            Ok(_) => eprintln!("Bark prepared in {:.1}s", t0.elapsed().as_secs_f64()),
+                            Err(e) => {
+                                eprintln!("Bark prepare failed: {}", e);
+                                app.emit("model-download-error", (&info.id, &e)).ok();
+                                return;
+                            }
+                        }
+                    }
+                    if info.model_type == models::ModelType::Cleanup {
+                        let state = app.state::<AppState>();
+                        let active = state.settings.lock().map(|s| s.active_cleanup_model.clone()).unwrap_or_default();
+                        if let Ok(mut c) = state.cleaner.lock() {
+                            if active == info.id && c.model_id() != Some(info.id) {
+                                c.start_worker(info.id, &path).ok();
+                            }
+                        };
+                    }
                     app.emit("model-download-complete", &info.id).ok();
                 }
                 Err(e) => {
                     eprintln!("Download failed: {} - {}", info.name, e);
-                    app.emit("model-download-error", &e).ok();
+                    app.emit("model-download-error", (&info.id, &e)).ok();
                 }
             }
         }
@@ -318,18 +341,19 @@ fn load_cleanup_model(model_id: String, state: tauri::State<'_, AppState>) -> Re
         return Err(format!("Model not downloaded: {}", info.name));
     }
     let mut cleaner = state.cleaner.lock().map_err(|e| e.to_string())?;
-    cleaner.start_worker(&path)
+    cleaner.start_worker(info.id, &path)
 }
 
 #[tauri::command]
 fn load_whisper_model_cmd(model_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let info = models::get_model(&model_id).ok_or("Unknown model")?;
     let path = models::model_path(info);
-    if !path.exists() {
+    if !models::is_downloaded(info) {
         return Err(format!("Model not downloaded: {}", info.name));
     }
-    let mut transcriber = state.transcriber.lock().map_err(|e| e.to_string())?;
-    transcriber.load_model(&path)
+    let engine = transcribe::open_engine(&path)?;
+    state.transcriber.lock().map_err(|e| e.to_string())?.set_engine(engine);
+    Ok(())
 }
 
 #[tauri::command]
@@ -357,25 +381,145 @@ fn update_hotkey(hotkey: String, state: tauri::State<'_, AppState>, app: tauri::
     settings.save()
 }
 
+/// Bump when there's a new "What's new" dialog to show to people who update.
+pub(crate) const WHATS_NEW_REVISION: u32 = 1;
+
+#[derive(serde::Serialize)]
+struct WhatsNewOffer {
+    /// "speech" or "cleanup"
+    kind: &'static str,
+    model_id: &'static str,
+    name: &'static str,
+    size_mb: u32,
+    downloaded: bool,
+    current_name: String,
+}
+
+/// New default models the user isn't using yet and could switch to.
+fn whats_new_offers(settings: &Settings) -> Vec<WhatsNewOffer> {
+    let mut offers = Vec::new();
+    let name_of = |id: &str| models::get_model(id).map(|m| m.name.to_string()).unwrap_or_else(|| id.to_string());
+
+    let speech = models::default_whisper_model();
+    if settings.language == "en" && speech.engine == models::Engine::Bark && settings.active_whisper_model != speech.id {
+        offers.push(WhatsNewOffer {
+            kind: "speech",
+            model_id: speech.id,
+            name: speech.name,
+            size_mb: speech.size_mb,
+            downloaded: models::is_downloaded(speech),
+            current_name: name_of(&settings.active_whisper_model),
+        });
+    }
+
+    let cleanup = models::default_cleanup_model(&settings.language);
+    if cleanup.id.starts_with("spokenly") && settings.active_cleanup_model != cleanup.id {
+        offers.push(WhatsNewOffer {
+            kind: "cleanup",
+            model_id: cleanup.id,
+            name: cleanup.name,
+            size_mb: cleanup.size_mb,
+            downloaded: models::is_downloaded(cleanup),
+            current_name: name_of(&settings.active_cleanup_model),
+        });
+    }
+    offers
+}
+
 #[tauri::command]
-fn switch_language(language: String, state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
+fn get_whats_new(state: tauri::State<'_, AppState>) -> Result<Vec<WhatsNewOffer>, String> {
     let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    let current_whisper = settings.active_whisper_model.clone();
-    drop(settings);
+    Ok(whats_new_offers(&settings))
+}
+
+fn mark_whats_new_seen(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    if let Ok(mut s) = state.settings.lock() {
+        if s.whats_new_seen < WHATS_NEW_REVISION {
+            s.whats_new_seen = WHATS_NEW_REVISION;
+            s.save().ok();
+        }
+    };
+}
+
+#[tauri::command]
+fn dismiss_whats_new(app: tauri::AppHandle) {
+    mark_whats_new_seen(&app);
+    if let Some(win) = app.get_webview_window("whatsnew") {
+        win.hide().ok();
+    }
+}
+
+/// Makes a downloaded speech or cleanup model the active one and saves the choice.
+#[tauri::command]
+fn use_model(model_id: String, state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    let info = models::get_model(&model_id).ok_or("Unknown model")?;
+    if !models::is_downloaded(info) {
+        return Err(format!("Model not downloaded: {}", info.name));
+    }
+    let path = models::model_path(info);
+    match info.model_type {
+        models::ModelType::Whisper => {
+            let engine = transcribe::open_engine(&path)?;
+            state.transcriber.lock().map_err(|e| e.to_string())?.set_engine(engine);
+        }
+        models::ModelType::Cleanup => {
+            state.cleaner.lock().map_err(|e| e.to_string())?.start_worker(info.id, &path)?;
+        }
+    }
+    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    match info.model_type {
+        models::ModelType::Whisper => settings.active_whisper_model = info.id.to_string(),
+        models::ModelType::Cleanup => settings.active_cleanup_model = info.id.to_string(),
+    }
+    settings.save()?;
+    app.emit("settings-changed", &*settings).ok();
+    Ok(())
+}
+
+#[tauri::command]
+fn switch_language(language: String, state: tauri::State<'_, AppState>) -> Result<LanguageSwitch, String> {
+    let (current_whisper, current_cleanup) = {
+        let s = state.settings.lock().map_err(|e| e.to_string())?;
+        (s.active_whisper_model.clone(), s.active_cleanup_model.clone())
+    };
+
+    let mut result = LanguageSwitch { whisper: None, cleanup: None };
 
     let target_id = models::whisper_model_for_language(&current_whisper, &language);
-    if target_id == current_whisper {
-        return Ok(None);
+    if target_id != current_whisper {
+        let info = models::get_model(&target_id).ok_or("Unknown model")?;
+        if models::is_downloaded(info) {
+            let engine = transcribe::open_engine(&models::model_path(info))?;
+            state.transcriber.lock().map_err(|e| e.to_string())?.set_engine(engine);
+        }
+        result.whisper = Some(target_id);
     }
 
-    let info = models::get_model(&target_id).ok_or("Unknown model")?;
-    let path = models::model_path(info);
-    if path.exists() {
-        let mut transcriber = state.transcriber.lock().map_err(|e| e.to_string())?;
-        transcriber.load_model(&path)?;
+    // Keep the cleanup model if it handles the language; otherwise use a downloaded one that does,
+    // or the language's default (which the UI then downloads; the worker switches when it lands).
+    let current = models::get_model(&current_cleanup);
+    if !current.map(|m| models::cleanup_supports(m, &language)).unwrap_or(false) {
+        let candidates = models::cleanup_model_candidates(&current_cleanup, &language);
+        let target = candidates
+            .iter()
+            .copied()
+            .find(|m| models::is_downloaded(m))
+            .unwrap_or_else(|| models::default_cleanup_model(&language));
+        if models::is_downloaded(target) {
+            state.cleaner.lock().map_err(|e| e.to_string())?.start_worker(target.id, &models::model_path(target))?;
+        }
+        state.settings.lock().map_err(|e| e.to_string())?.active_cleanup_model = target.id.to_string();
+        result.cleanup = Some(target.id.to_string());
     }
 
-    Ok(Some(target_id))
+    Ok(result)
+}
+
+#[derive(serde::Serialize)]
+struct LanguageSwitch {
+    whisper: Option<String>,
+    cleanup: Option<String>,
 }
 
 #[tauri::command]
@@ -439,15 +583,14 @@ struct SetupStatus {
 }
 
 #[tauri::command]
-fn check_setup() -> SetupStatus {
-    let whisper = models::default_whisper_model();
-    let cleanup_candidates = ["gemma4-e2b", "gemma4-e4b", "qwen25-1.5b", "qwen25-3b"];
-    let cleanup_ready = cleanup_candidates
-        .iter()
-        .any(|id| models::get_model(id).map(|m| models::is_downloaded(m)).unwrap_or(false));
+fn check_setup(state: tauri::State<'_, AppState>) -> SetupStatus {
+    let active_id = state.settings.lock().map(|s| s.active_whisper_model.clone()).unwrap_or_default();
+    let whisper_ready = models::speech_model_candidates(&active_id).into_iter().any(models::is_downloaded);
+    let language = state.settings.lock().map(|s| s.language.clone()).unwrap_or_else(|_| "en".to_string());
+    let cleanup_ready = models::cleanup_model_candidates("", &language).into_iter().any(models::is_downloaded);
 
     SetupStatus {
-        whisper_ready: models::is_downloaded(whisper),
+        whisper_ready,
         cleanup_ready,
         whisper_downloading: false,
         cleanup_downloading: false,
@@ -457,62 +600,79 @@ fn check_setup() -> SetupStatus {
 #[tauri::command]
 fn setup_download_models(app: tauri::AppHandle) {
     std::thread::spawn(move || {
-        let whisper = models::default_whisper_model();
-        if !models::is_downloaded(whisper) {
-            app.emit("setup-progress", "Downloading speech model...").ok();
-            match models::download_model_blocking(whisper, |_, _| {}) {
-                Ok(_) => {
-                    app.emit("setup-progress", "Speech model ready").ok();
-                    {
-                        let state = app.state::<AppState>();
-                        let mut t = state.transcriber.lock().unwrap();
-                        t.load_model(&models::model_path(whisper)).ok();
+        let state = app.state::<AppState>();
+        let active_id = state.settings.lock().map(|s| s.active_whisper_model.clone()).unwrap_or_default();
+        if !models::speech_model_candidates(&active_id).into_iter().any(models::is_downloaded) {
+            // Try the default (Bark where supported); if it can't be downloaded or prepared, use Whisper base.en.
+            let mut fallbacks = vec![models::default_whisper_model()];
+            fallbacks.extend(models::get_model("whisper-base-en").filter(|m| m.id != fallbacks[0].id));
+            let mut last_err = String::new();
+            let mut ready = false;
+            for info in fallbacks {
+                app.emit("setup-progress", "Downloading speech model...").ok();
+                let path = match models::download_model_blocking(info, |_, _| {}) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Setup: download of {} failed: {}", info.id, e);
+                        last_err = e;
+                        continue;
+                    }
+                };
+                if info.engine == models::Engine::Bark {
+                    app.emit("setup-progress", "Preparing speech model for this Mac (a few minutes)...").ok();
+                }
+                match transcribe::open_engine(&path) {
+                    Ok(engine) => {
+                        if let Ok(mut t) = state.transcriber.lock() {
+                            t.set_engine(engine);
+                        }
+                        if let Ok(mut s) = state.settings.lock() {
+                            s.active_whisper_model = info.id.to_string();
+                            s.save().ok();
+                        }
+                        app.emit("setup-progress", "Speech model ready").ok();
+                        ready = true;
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("Setup: loading {} failed: {}", info.id, e);
+                        last_err = e;
                     }
                 }
+            }
+            if !ready {
+                app.emit("setup-error", &format!("Failed to download speech model: {}", last_err)).ok();
+                return;
+            }
+        }
+
+        let (active_cleanup, language) = state
+            .settings
+            .lock()
+            .map(|s| (s.active_cleanup_model.clone(), s.language.clone()))
+            .unwrap_or_default();
+        if !models::cleanup_model_candidates(&active_cleanup, &language).into_iter().any(models::is_downloaded) {
+            let info = models::default_cleanup_model(&language);
+            app.emit("setup-progress", "Downloading cleanup model...").ok();
+            match models::download_model_blocking(info, |_, _| {}) {
+                Ok(_) => {
+                    app.emit("setup-progress", "Cleanup model ready").ok();
+                }
                 Err(e) => {
-                    app.emit("setup-error", &format!("Failed to download speech model: {}", e)).ok();
+                    app.emit("setup-error", &format!("Failed to download cleanup model: {}", e)).ok();
                     return;
                 }
             }
         }
 
-        let cleanup_candidates = ["gemma4-e2b", "gemma4-e4b", "qwen25-1.5b", "qwen25-3b"];
-        let mut cleanup_downloaded = false;
-        for id in &cleanup_candidates {
-            if let Some(info) = models::get_model(id) {
-                if models::is_downloaded(info) {
-                    cleanup_downloaded = true;
-                    break;
-                }
-            }
-        }
-        if !cleanup_downloaded {
-            if let Some(info) = models::get_model("qwen25-1.5b") {
-                app.emit("setup-progress", "Downloading cleanup model...").ok();
-                match models::download_model_blocking(info, |_, _| {}) {
-                    Ok(_) => {
-                        app.emit("setup-progress", "Cleanup model ready").ok();
-                    }
-                    Err(e) => {
-                        app.emit("setup-error", &format!("Failed to download cleanup model: {}", e)).ok();
-                        return;
-                    }
-                }
-            }
-        }
-
         // Start the cleanup worker
-        for id in &cleanup_candidates {
-            if let Some(info) = models::get_model(id) {
-                let path = models::model_path(info);
-                if path.exists() {
-                    {
-                        let state = app.state::<AppState>();
-                        let mut c = state.cleaner.lock().unwrap();
-                        c.start_worker(&path).ok();
-                    }
-                    break;
-                }
+        if let Some(info) = models::cleanup_model_candidates(&active_cleanup, &language).into_iter().find(|m| models::is_downloaded(m)) {
+            let mut c = state.cleaner.lock().unwrap();
+            c.start_worker(info.id, &models::model_path(info)).ok();
+            drop(c);
+            if let Ok(mut s) = state.settings.lock() {
+                s.active_cleanup_model = info.id.to_string();
+                s.save().ok();
             }
         }
 
@@ -1106,11 +1266,22 @@ fn unregister_escape_shortcut(app: &tauri::AppHandle) {
 fn init_models_async(app_handle: tauri::AppHandle) {
     std::thread::spawn(move || {
         let state = app_handle.state::<AppState>();
-        let whisper_model = models::default_whisper_model();
-        let whisper_path = models::model_path(whisper_model);
-        if whisper_path.exists() {
-            if let Ok(mut t) = state.transcriber.lock() {
-                t.load_model(&whisper_path).ok();
+        let active_id = state.settings.lock().map(|s| s.active_whisper_model.clone()).unwrap_or_default();
+        // Load the speech model the user chose, falling back to the default, then Whisper base.en.
+        for info in models::speech_model_candidates(&active_id) {
+            if !models::is_downloaded(info) {
+                continue;
+            }
+            // Open outside the lock: if Core ML has dropped Bark's cache this takes minutes.
+            match transcribe::open_engine(&models::model_path(info)) {
+                Ok(engine) => {
+                    if let Ok(mut t) = state.transcriber.lock() {
+                        t.set_engine(engine);
+                    }
+                    eprintln!("Loaded speech model: {}", info.id);
+                    break;
+                }
+                Err(e) => eprintln!("Failed to load speech model {}: {}", info.id, e),
             }
         }
     });
@@ -1162,6 +1333,9 @@ pub fn run() {
             open_settings,
             get_settings,
             update_settings,
+            get_whats_new,
+            dismiss_whats_new,
+            use_model,
             get_autostart_enabled,
             set_autostart_enabled,
             list_models,
@@ -1211,6 +1385,24 @@ pub fn run() {
             macos_panel::make_panel(app);
             init_models_async(app.handle().clone());
 
+            // After an update, introduce new default models once, if there's anything to switch to.
+            {
+                let state = app.state::<AppState>();
+                let show = state
+                    .settings
+                    .lock()
+                    .map(|s| s.setup_complete && s.whats_new_seen < WHATS_NEW_REVISION && !whats_new_offers(&s).is_empty())
+                    .unwrap_or(false);
+                if show {
+                    if let Some(win) = app.get_webview_window("whatsnew") {
+                        win.show().ok();
+                        win.set_focus().ok();
+                    }
+                } else {
+                    mark_whats_new_seen(app.handle());
+                }
+            }
+
             // Enable autostart by default on first launch. The flag prevents
             // re-enabling after the user explicitly disables it later.
             {
@@ -1257,27 +1449,30 @@ pub fn run() {
             let cleanup_handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(3));
-                let cleanup_candidates = ["gemma4-e2b", "gemma4-e4b", "qwen25-1.5b", "qwen25-3b"];
-                for id in &cleanup_candidates {
-                    if let Some(info) = models::get_model(id) {
-                        let path = models::model_path(info);
-                        if path.exists() {
-                            let state = cleanup_handle.state::<AppState>();
-                            if let Ok(mut c) = state.cleaner.lock() {
-                                c.start_worker(&path).ok();
-                            }
-                            return;
-                        }
+                // Start the model the user chose; the cleanup prompt is built for that model.
+                let state = cleanup_handle.state::<AppState>();
+                let (active, language) = state
+                    .settings
+                    .lock()
+                    .map(|s| (s.active_cleanup_model.clone(), s.language.clone()))
+                    .unwrap_or_default();
+                if let Some(info) = models::cleanup_model_candidates(&active, &language).into_iter().find(|m| models::is_downloaded(m)) {
+                    if let Ok(mut c) = state.cleaner.lock() {
+                        c.start_worker(info.id, &models::model_path(info)).ok();
                     }
                 }
             });
 
-            for label in &["history", "settings", "update"] {
+            for label in &["history", "settings", "update", "whatsnew"] {
                 if let Some(win) = app.get_webview_window(label) {
                     let handle = win.clone();
+                    let is_whats_new = *label == "whatsnew";
                     win.on_window_event(move |event| {
                         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                             api.prevent_close();
+                            if is_whats_new {
+                                mark_whats_new_seen(handle.app_handle());
+                            }
                             handle.hide().ok();
                         }
                     });
@@ -1336,5 +1531,40 @@ mod hotkey_parse_tests {
     #[test]
     fn rejects_unknown_key() {
         assert!(parse_hotkey("cmd+shift+nonsense").is_none());
+    }
+}
+
+#[cfg(test)]
+mod whats_new_tests {
+    use super::*;
+
+    fn offer_ids(language: &str, speech: &str, cleanup: &str) -> Vec<&'static str> {
+        let mut s = Settings::default();
+        s.language = language.to_string();
+        s.active_whisper_model = speech.to_string();
+        s.active_cleanup_model = cleanup.to_string();
+        whats_new_offers(&s).iter().map(|o| o.model_id).collect()
+    }
+
+    #[test]
+    fn offers_the_new_defaults_to_people_not_using_them() {
+        let ids = offer_ids("en", "whisper-base-en", "gemma4-e4b");
+        assert!(ids.contains(&"spokenly-cleanup-1"));
+        assert_eq!(ids.contains(&"bark-3-en"), crate::bark::is_supported());
+    }
+
+    #[test]
+    fn offers_nothing_once_on_the_defaults() {
+        assert!(offer_ids("en", models::default_whisper_model().id, "spokenly-cleanup-1").is_empty());
+    }
+
+    #[test]
+    fn offers_nothing_for_languages_the_new_models_do_not_handle() {
+        assert!(offer_ids("ko", "whisper-base-multi", "gemma4-e4b").is_empty());
+    }
+
+    #[test]
+    fn new_installs_start_with_whats_new_seen() {
+        assert_eq!(Settings::default().whats_new_seen, WHATS_NEW_REVISION);
     }
 }

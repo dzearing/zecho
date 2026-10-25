@@ -1,0 +1,8 @@
+# Build local (dev) binaries the way the release workflow does. llama.cpp tuned for the
+# build machine's CPU (cmake's default) ran Gemma cleanup ~3x slower on an M4 Max than the
+# release build. Values already set in the environment (as in CI) take precedence.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "12.0"
+CMAKE_OSX_DEPLOYMENT_TARGET = "12.0"
+CMAKE_C_FLAGS = "-march=armv8.2-a"
+CMAKE_CXX_FLAGS = "-march=armv8.2-a"

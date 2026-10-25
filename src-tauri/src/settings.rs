@@ -47,6 +47,10 @@ pub struct Settings {
     pub language: String,
     #[serde(default)]
     pub autostart_initialized: bool,
+    /// Last "What's new" revision the user has seen. Missing in older settings files, so
+    /// updated installs see the dialog once; new installs start current.
+    #[serde(default)]
+    pub whats_new_seen: u32,
     #[serde(skip)]
     pub(crate) path: PathBuf,
 }
@@ -68,14 +72,15 @@ impl Default for Settings {
             writing_style: WritingStyle::default(),
             cleanup_level: CleanupLevel::default(),
             custom_prompt: None,
-            active_whisper_model: "whisper-base-en".to_string(),
-            active_cleanup_model: "qwen25-1.5b".to_string(),
+            active_whisper_model: crate::models::default_whisper_model().id.to_string(),
+            active_cleanup_model: crate::models::default_cleanup_model("en").id.to_string(),
             setup_complete: false,
             pill_x_pct: None,
             pill_y_pct: None,
             fn_key_enabled: true,
             language: "en".to_string(),
             autostart_initialized: false,
+            whats_new_seen: crate::WHATS_NEW_REVISION,
             path: PathBuf::new(),
         }
     }
@@ -97,19 +102,16 @@ impl Settings {
         use crate::models;
 
         if let Some(info) = models::get_model(&self.active_cleanup_model) {
-            if models::is_downloaded(info) {
+            if models::is_downloaded(info) && models::cleanup_supports(info, &self.language) {
                 return;
             }
         }
-        let candidates = ["qwen25-1.5b", "qwen25-3b", "gemma4-e2b", "gemma4-e4b"];
-        for id in &candidates {
-            if let Some(info) = models::get_model(id) {
-                if models::is_downloaded(info) {
-                    self.active_cleanup_model = id.to_string();
-                    self.save().ok();
-                    return;
-                }
-            }
+        if let Some(info) = models::cleanup_model_candidates(&self.active_cleanup_model, &self.language)
+            .into_iter()
+            .find(|m| models::is_downloaded(m))
+        {
+            self.active_cleanup_model = info.id.to_string();
+            self.save().ok();
         }
     }
 

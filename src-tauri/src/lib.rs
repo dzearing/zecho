@@ -458,10 +458,7 @@ struct SetupStatus {
 fn check_setup(state: tauri::State<'_, AppState>) -> SetupStatus {
     let active_id = state.settings.lock().map(|s| s.active_whisper_model.clone()).unwrap_or_default();
     let whisper_ready = models::speech_model_candidates(&active_id).into_iter().any(models::is_downloaded);
-    let cleanup_candidates = ["gemma4-e2b", "gemma4-e4b", "qwen25-1.5b", "qwen25-3b", "spokenly-cleanup-1"];
-    let cleanup_ready = cleanup_candidates
-        .iter()
-        .any(|id| models::get_model(id).map(|m| models::is_downloaded(m)).unwrap_or(false));
+    let cleanup_ready = models::cleanup_model_candidates("").into_iter().any(models::is_downloaded);
 
     SetupStatus {
         whisper_ready,
@@ -520,43 +517,29 @@ fn setup_download_models(app: tauri::AppHandle) {
             }
         }
 
-        let cleanup_candidates = ["gemma4-e2b", "gemma4-e4b", "qwen25-1.5b", "qwen25-3b", "spokenly-cleanup-1"];
-        let mut cleanup_downloaded = false;
-        for id in &cleanup_candidates {
-            if let Some(info) = models::get_model(id) {
-                if models::is_downloaded(info) {
-                    cleanup_downloaded = true;
-                    break;
+        let active_cleanup = state.settings.lock().map(|s| s.active_cleanup_model.clone()).unwrap_or_default();
+        if !models::cleanup_model_candidates(&active_cleanup).into_iter().any(models::is_downloaded) {
+            let info = models::default_cleanup_model();
+            app.emit("setup-progress", "Downloading cleanup model...").ok();
+            match models::download_model_blocking(info, |_, _| {}) {
+                Ok(_) => {
+                    app.emit("setup-progress", "Cleanup model ready").ok();
                 }
-            }
-        }
-        if !cleanup_downloaded {
-            if let Some(info) = models::get_model("qwen25-1.5b") {
-                app.emit("setup-progress", "Downloading cleanup model...").ok();
-                match models::download_model_blocking(info, |_, _| {}) {
-                    Ok(_) => {
-                        app.emit("setup-progress", "Cleanup model ready").ok();
-                    }
-                    Err(e) => {
-                        app.emit("setup-error", &format!("Failed to download cleanup model: {}", e)).ok();
-                        return;
-                    }
+                Err(e) => {
+                    app.emit("setup-error", &format!("Failed to download cleanup model: {}", e)).ok();
+                    return;
                 }
             }
         }
 
         // Start the cleanup worker
-        for id in &cleanup_candidates {
-            if let Some(info) = models::get_model(id) {
-                let path = models::model_path(info);
-                if path.exists() {
-                    {
-                        let state = app.state::<AppState>();
-                        let mut c = state.cleaner.lock().unwrap();
-                        c.start_worker(&path).ok();
-                    }
-                    break;
-                }
+        if let Some(info) = models::cleanup_model_candidates(&active_cleanup).into_iter().find(|m| models::is_downloaded(m)) {
+            let mut c = state.cleaner.lock().unwrap();
+            c.start_worker(&models::model_path(info)).ok();
+            drop(c);
+            if let Ok(mut s) = state.settings.lock() {
+                s.active_cleanup_model = info.id.to_string();
+                s.save().ok();
             }
         }
 
@@ -1312,17 +1295,12 @@ pub fn run() {
             let cleanup_handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(3));
-                let cleanup_candidates = ["gemma4-e2b", "gemma4-e4b", "qwen25-1.5b", "qwen25-3b", "spokenly-cleanup-1"];
-                for id in &cleanup_candidates {
-                    if let Some(info) = models::get_model(id) {
-                        let path = models::model_path(info);
-                        if path.exists() {
-                            let state = cleanup_handle.state::<AppState>();
-                            if let Ok(mut c) = state.cleaner.lock() {
-                                c.start_worker(&path).ok();
-                            }
-                            return;
-                        }
+                // Start the model the user chose; the cleanup prompt is built for that model.
+                let state = cleanup_handle.state::<AppState>();
+                let active = state.settings.lock().map(|s| s.active_cleanup_model.clone()).unwrap_or_default();
+                if let Some(info) = models::cleanup_model_candidates(&active).into_iter().find(|m| models::is_downloaded(m)) {
+                    if let Ok(mut c) = state.cleaner.lock() {
+                        c.start_worker(&models::model_path(info)).ok();
                     }
                 }
             });

@@ -194,9 +194,15 @@ pub fn build_prompt(
     model_id: &str,
     language: &str,
 ) -> String {
-    // Spokenly was trained on one fixed completion prompt; instructions would only confuse it.
+    // Spokenly was trained on fixed "key: value" lines rather than instructions; its only
+    // setting that maps onto Zecho's is the tone.
     if model_id.starts_with("spokenly") {
-        return format!("text: {}\nout:", raw_text);
+        let tone = match style {
+            WritingStyle::Formal => "formal",
+            WritingStyle::Casual => "casual",
+            WritingStyle::VeryCasual => "very casual",
+        };
+        return format!("tone: {}\ntext: {}\nout:", tone, raw_text);
     }
 
     let lang_name = match language {
@@ -407,7 +413,7 @@ mod tests {
     #[test]
     fn spokenly_gets_its_trained_prompt() {
         let p = build_prompt("um hi there", &WritingStyle::Formal, &CleanupLevel::High, Some("be terse"), "spokenly-cleanup-1", "en");
-        assert_eq!(p, "text: um hi there\nout:");
+        assert_eq!(p, "tone: formal\ntext: um hi there\nout:");
     }
 
     #[test]

@@ -69,7 +69,7 @@ impl Default for Settings {
             cleanup_level: CleanupLevel::default(),
             custom_prompt: None,
             active_whisper_model: crate::models::default_whisper_model().id.to_string(),
-            active_cleanup_model: "qwen25-1.5b".to_string(),
+            active_cleanup_model: crate::models::default_cleanup_model().id.to_string(),
             setup_complete: false,
             pill_x_pct: None,
             pill_y_pct: None,
@@ -101,15 +101,12 @@ impl Settings {
                 return;
             }
         }
-        let candidates = ["qwen25-1.5b", "qwen25-3b", "gemma4-e2b", "gemma4-e4b", "spokenly-cleanup-1"];
-        for id in &candidates {
-            if let Some(info) = models::get_model(id) {
-                if models::is_downloaded(info) {
-                    self.active_cleanup_model = id.to_string();
-                    self.save().ok();
-                    return;
-                }
-            }
+        if let Some(info) = models::cleanup_model_candidates(&self.active_cleanup_model)
+            .into_iter()
+            .find(|m| models::is_downloaded(m))
+        {
+            self.active_cleanup_model = info.id.to_string();
+            self.save().ok();
         }
     }
 

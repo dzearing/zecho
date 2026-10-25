@@ -19,12 +19,6 @@ impl Transcriber {
         Self { engine: None }
     }
 
-    /// Loads a Whisper ggml file, or a Bark model directory.
-    pub fn load_model(&mut self, model_path: &std::path::Path) -> Result<(), String> {
-        self.engine = Some(open_engine(model_path)?);
-        Ok(())
-    }
-
     /// Swaps in an engine opened with `open_engine`, so slow loads don't need the transcriber lock.
     pub fn set_engine(&mut self, engine: Engine) {
         self.engine = Some(engine);

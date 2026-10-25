@@ -39,12 +39,12 @@ download_model \
     "142MB"
 
 echo ""
-echo "Text Cleanup (Qwen 3):"
+echo "Text Cleanup (Spokenly Cleanup 1):"
 download_model \
-    "Qwen 3 0.6B (Q4_K_M)" \
-    "Qwen3-0.6B-Q4_K_M.gguf" \
-    "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf" \
-    "397MB"
+    "Spokenly Cleanup 1 (Q8_0)" \
+    "spokenly-cleanup-1-q8_0.gguf" \
+    "https://huggingface.co/spokenly/cleanup-1-gguf/resolve/79936c95e5c0ea9162ae7a435e64cb3127020e36/cleanup-1-q8_0.gguf" \
+    "610MB"
 
 echo ""
 echo "All models ready. Run: cargo tauri dev"

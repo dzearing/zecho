@@ -158,11 +158,11 @@ pub const AVAILABLE_MODELS: &[ModelInfo] = &[
     },
     // Cleanup models
     // Spokenly Cleanup 1: a Qwen3-0.6B fine-tune for dictation cleanup. Apache-2.0. Pinned to a revision.
-    // It takes its own fixed prompt, so writing style, cleanup level and custom instructions don't apply.
+    // It takes its own fixed prompt, so only the writing style applies (as its "tone").
     ModelInfo {
         id: "spokenly-cleanup-1",
         name: "Spokenly Cleanup",
-        description: "Fastest. Trained only for dictation cleanup; ignores writing style and custom instructions.",
+        description: "Recommended — fastest. Built for dictation cleanup; best in English. Follows writing style; ignores cleanup level and custom instructions.",
         size_mb: 610,
         quality_score: 8,
         speed_score: 10,
@@ -176,7 +176,7 @@ pub const AVAILABLE_MODELS: &[ModelInfo] = &[
     ModelInfo {
         id: "qwen25-1.5b",
         name: "Balanced",
-        description: "Recommended — reliable cleanup with good speed.",
+        description: "Reliable cleanup with good speed.",
         size_mb: 986,
         quality_score: 8,
         speed_score: 8,
@@ -314,7 +314,19 @@ pub fn whisper_model_for_language(current_id: &str, language: &str) -> String {
 }
 
 pub fn default_cleanup_model() -> &'static ModelInfo {
-    get_model("qwen25-1.5b").unwrap()
+    get_model("spokenly-cleanup-1").unwrap()
+}
+
+/// Cleanup models to try, best first: the user's choice, the default, then any other cleanup model.
+pub fn cleanup_model_candidates(active_id: &str) -> Vec<&'static ModelInfo> {
+    let mut out: Vec<&'static ModelInfo> = Vec::new();
+    let others = AVAILABLE_MODELS.iter().filter(|m| m.model_type == ModelType::Cleanup);
+    for info in [get_model(active_id), Some(default_cleanup_model())].into_iter().flatten().chain(others) {
+        if info.model_type == ModelType::Cleanup && !out.iter().any(|m| m.id == info.id) {
+            out.push(info);
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -442,6 +454,17 @@ fn download_file(url: &str, dest: &std::path::Path, mut on_progress: impl FnMut(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_candidates_put_the_active_model_first() {
+        let ids = |active: &str| cleanup_model_candidates(active).iter().map(|m| m.id).collect::<Vec<_>>();
+        assert_eq!(ids("gemma4-e4b")[..2], ["gemma4-e4b", "spokenly-cleanup-1"]);
+        assert_eq!(ids("unknown")[0], "spokenly-cleanup-1");
+        assert_eq!(ids("whisper-base-en")[0], "spokenly-cleanup-1");
+        let all = ids("qwen25-3b");
+        assert!(all.iter().all(|id| get_model(id).unwrap().model_type == ModelType::Cleanup));
+        assert_eq!(all.len(), AVAILABLE_MODELS.iter().filter(|m| m.model_type == ModelType::Cleanup).count());
+    }
 
     #[test]
     fn bark_is_the_default_where_supported() {

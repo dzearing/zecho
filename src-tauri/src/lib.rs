@@ -381,6 +381,102 @@ fn update_hotkey(hotkey: String, state: tauri::State<'_, AppState>, app: tauri::
     settings.save()
 }
 
+/// Bump when there's a new "What's new" dialog to show to people who update.
+pub(crate) const WHATS_NEW_REVISION: u32 = 1;
+
+#[derive(serde::Serialize)]
+struct WhatsNewOffer {
+    /// "speech" or "cleanup"
+    kind: &'static str,
+    model_id: &'static str,
+    name: &'static str,
+    size_mb: u32,
+    downloaded: bool,
+    current_name: String,
+}
+
+/// New default models the user isn't using yet and could switch to.
+fn whats_new_offers(settings: &Settings) -> Vec<WhatsNewOffer> {
+    let mut offers = Vec::new();
+    let name_of = |id: &str| models::get_model(id).map(|m| m.name.to_string()).unwrap_or_else(|| id.to_string());
+
+    let speech = models::default_whisper_model();
+    if settings.language == "en" && speech.engine == models::Engine::Bark && settings.active_whisper_model != speech.id {
+        offers.push(WhatsNewOffer {
+            kind: "speech",
+            model_id: speech.id,
+            name: speech.name,
+            size_mb: speech.size_mb,
+            downloaded: models::is_downloaded(speech),
+            current_name: name_of(&settings.active_whisper_model),
+        });
+    }
+
+    let cleanup = models::default_cleanup_model(&settings.language);
+    if cleanup.id.starts_with("spokenly") && settings.active_cleanup_model != cleanup.id {
+        offers.push(WhatsNewOffer {
+            kind: "cleanup",
+            model_id: cleanup.id,
+            name: cleanup.name,
+            size_mb: cleanup.size_mb,
+            downloaded: models::is_downloaded(cleanup),
+            current_name: name_of(&settings.active_cleanup_model),
+        });
+    }
+    offers
+}
+
+#[tauri::command]
+fn get_whats_new(state: tauri::State<'_, AppState>) -> Result<Vec<WhatsNewOffer>, String> {
+    let settings = state.settings.lock().map_err(|e| e.to_string())?;
+    Ok(whats_new_offers(&settings))
+}
+
+fn mark_whats_new_seen(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    if let Ok(mut s) = state.settings.lock() {
+        if s.whats_new_seen < WHATS_NEW_REVISION {
+            s.whats_new_seen = WHATS_NEW_REVISION;
+            s.save().ok();
+        }
+    };
+}
+
+#[tauri::command]
+fn dismiss_whats_new(app: tauri::AppHandle) {
+    mark_whats_new_seen(&app);
+    if let Some(win) = app.get_webview_window("whatsnew") {
+        win.hide().ok();
+    }
+}
+
+/// Makes a downloaded speech or cleanup model the active one and saves the choice.
+#[tauri::command]
+fn use_model(model_id: String, state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    let info = models::get_model(&model_id).ok_or("Unknown model")?;
+    if !models::is_downloaded(info) {
+        return Err(format!("Model not downloaded: {}", info.name));
+    }
+    let path = models::model_path(info);
+    match info.model_type {
+        models::ModelType::Whisper => {
+            let engine = transcribe::open_engine(&path)?;
+            state.transcriber.lock().map_err(|e| e.to_string())?.set_engine(engine);
+        }
+        models::ModelType::Cleanup => {
+            state.cleaner.lock().map_err(|e| e.to_string())?.start_worker(info.id, &path)?;
+        }
+    }
+    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    match info.model_type {
+        models::ModelType::Whisper => settings.active_whisper_model = info.id.to_string(),
+        models::ModelType::Cleanup => settings.active_cleanup_model = info.id.to_string(),
+    }
+    settings.save()?;
+    app.emit("settings-changed", &*settings).ok();
+    Ok(())
+}
+
 #[tauri::command]
 fn switch_language(language: String, state: tauri::State<'_, AppState>) -> Result<LanguageSwitch, String> {
     let (current_whisper, current_cleanup) = {
@@ -1237,6 +1333,9 @@ pub fn run() {
             open_settings,
             get_settings,
             update_settings,
+            get_whats_new,
+            dismiss_whats_new,
+            use_model,
             get_autostart_enabled,
             set_autostart_enabled,
             list_models,
@@ -1285,6 +1384,24 @@ pub fn run() {
 
             macos_panel::make_panel(app);
             init_models_async(app.handle().clone());
+
+            // After an update, introduce new default models once, if there's anything to switch to.
+            {
+                let state = app.state::<AppState>();
+                let show = state
+                    .settings
+                    .lock()
+                    .map(|s| s.setup_complete && s.whats_new_seen < WHATS_NEW_REVISION && !whats_new_offers(&s).is_empty())
+                    .unwrap_or(false);
+                if show {
+                    if let Some(win) = app.get_webview_window("whatsnew") {
+                        win.show().ok();
+                        win.set_focus().ok();
+                    }
+                } else {
+                    mark_whats_new_seen(app.handle());
+                }
+            }
 
             // Enable autostart by default on first launch. The flag prevents
             // re-enabling after the user explicitly disables it later.
@@ -1346,12 +1463,16 @@ pub fn run() {
                 }
             });
 
-            for label in &["history", "settings", "update"] {
+            for label in &["history", "settings", "update", "whatsnew"] {
                 if let Some(win) = app.get_webview_window(label) {
                     let handle = win.clone();
+                    let is_whats_new = *label == "whatsnew";
                     win.on_window_event(move |event| {
                         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                             api.prevent_close();
+                            if is_whats_new {
+                                mark_whats_new_seen(handle.app_handle());
+                            }
                             handle.hide().ok();
                         }
                     });
@@ -1410,5 +1531,40 @@ mod hotkey_parse_tests {
     #[test]
     fn rejects_unknown_key() {
         assert!(parse_hotkey("cmd+shift+nonsense").is_none());
+    }
+}
+
+#[cfg(test)]
+mod whats_new_tests {
+    use super::*;
+
+    fn offer_ids(language: &str, speech: &str, cleanup: &str) -> Vec<&'static str> {
+        let mut s = Settings::default();
+        s.language = language.to_string();
+        s.active_whisper_model = speech.to_string();
+        s.active_cleanup_model = cleanup.to_string();
+        whats_new_offers(&s).iter().map(|o| o.model_id).collect()
+    }
+
+    #[test]
+    fn offers_the_new_defaults_to_people_not_using_them() {
+        let ids = offer_ids("en", "whisper-base-en", "gemma4-e4b");
+        assert!(ids.contains(&"spokenly-cleanup-1"));
+        assert_eq!(ids.contains(&"bark-3-en"), crate::bark::is_supported());
+    }
+
+    #[test]
+    fn offers_nothing_once_on_the_defaults() {
+        assert!(offer_ids("en", models::default_whisper_model().id, "spokenly-cleanup-1").is_empty());
+    }
+
+    #[test]
+    fn offers_nothing_for_languages_the_new_models_do_not_handle() {
+        assert!(offer_ids("ko", "whisper-base-multi", "gemma4-e4b").is_empty());
+    }
+
+    #[test]
+    fn new_installs_start_with_whats_new_seen() {
+        assert_eq!(Settings::default().whats_new_seen, WHATS_NEW_REVISION);
     }
 }

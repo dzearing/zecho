@@ -64,6 +64,17 @@
         "resizable": false,
         "visible": false,
         "center": true
+      },
+      {
+        "label": "whatsnew",
+        "title": "What's New in Zecho",
+        "url": "whatsnew.html",
+        "width": 480,
+        "height": 600,
+        "decorations": true,
+        "resizable": false,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {

@@ -47,6 +47,10 @@ pub struct Settings {
     pub language: String,
     #[serde(default)]
     pub autostart_initialized: bool,
+    /// Last "What's new" revision the user has seen. Missing in older settings files, so
+    /// updated installs see the dialog once; new installs start current.
+    #[serde(default)]
+    pub whats_new_seen: u32,
     #[serde(skip)]
     pub(crate) path: PathBuf,
 }
@@ -76,6 +80,7 @@ impl Default for Settings {
             fn_key_enabled: true,
             language: "en".to_string(),
             autostart_initialized: false,
+            whats_new_seen: crate::WHATS_NEW_REVISION,
             path: PathBuf::new(),
         }
     }

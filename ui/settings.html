@@ -1044,6 +1044,15 @@
 
     loadSettings().then(() => loadModels());
 
+    // Other windows (What's new, setup) change settings too. Keep this window's copy current so
+    // saving an unrelated setting here doesn't write back stale model choices.
+    listen("settings-changed", (event) => {
+      settings = event.payload;
+      currentWhisperModel = settings.active_whisper_model;
+      currentCleanupModel = settings.active_cleanup_model;
+      loadModels();
+    });
+
     // ── Footer version ──
     (async () => {
       try {

@@ -6,3 +6,6 @@ MACOSX_DEPLOYMENT_TARGET = "12.0"
 CMAKE_OSX_DEPLOYMENT_TARGET = "12.0"
 CMAKE_C_FLAGS = "-march=armv8.2-a"
 CMAKE_CXX_FLAGS = "-march=armv8.2-a"
+# llama.cpp's bundled cpp-httplib doesn't compile against OpenSSL 4 (the GitHub runner's
+# Homebrew default). Zecho downloads models itself, so llama.cpp doesn't need HTTPS.
+CMAKE_DISABLE_FIND_PACKAGE_OpenSSL = "TRUE"

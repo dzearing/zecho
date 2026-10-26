@@ -369,7 +369,8 @@
     .model-btn.download:hover { background: #7d6ef0; }
     .model-btn.active-btn { background: rgba(48, 209, 88, 0.12); color: #30d158; cursor: default; }
     .model-btn.select { background: var(--bg); color: var(--text-secondary); border: 1px solid var(--border); }
-    .model-btn.select:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.15); }
+    .model-btn.select:hover:not(:disabled) { color: var(--text); border-color: rgba(255, 255, 255, 0.15); }
+    .model-btn.select:disabled { opacity: 0.4; cursor: default; }
     .model-btn.downloading { background: var(--bg); color: var(--text-secondary); cursor: wait; }
     .model-btn.cancel { background: rgba(255, 69, 58, 0.12); color: #ff453a; }
     .model-btn.cancel:hover { background: rgba(255, 69, 58, 0.2); }
@@ -382,6 +383,27 @@
     }
 
     .model-size { font-size: 11px; color: #636366; margin-top: 2px; }
+
+    /* Shown while a model loads or compiles; a first Bark load takes minutes. */
+    .prep {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .spin {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 2px solid rgba(108, 92, 231, 0.25);
+      border-top-color: var(--accent);
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .prep-note { font-size: 11px; color: var(--text-secondary); margin-top: 6px; line-height: 1.4; }
 
     /* ── Hotkey recorder ── */
 
@@ -912,12 +934,18 @@
       const speedDots = renderScoreDots(model.speed_score, 10, "green");
 
       let actionHtml;
-      if (!model.downloaded) {
+      let prepNote = "";
+      if (model.id in preparing) {
+        actionHtml = `<span class="prep"><span class="spin"></span><span id="prep-${model.id}">${prepLabel(model.id)}</span></span>`;
+        prepNote = `<div class="prep-note" id="prep-note-${model.id}"${isCompiling(model.id) ? "" : " hidden"}>${PREP_NOTE}</div>`;
+      } else if (!model.downloaded) {
         actionHtml = `<span class="download-pct" id="pct-${model.id}"></span><button class="model-btn download" data-download="${model.id}" id="btn-${model.id}">Download</button>`;
       } else if (isActive) {
         actionHtml = `<button class="model-btn active-btn">Active</button>`;
       } else {
-        actionHtml = `<button class="model-btn select" data-select="${model.id}" data-type="${model.model_type}">Use</button>`;
+        // One load per list at a time, or whichever finished last would win.
+        const busy = Object.values(preparing).some((p) => p.type === model.model_type);
+        actionHtml = `<button class="model-btn select" data-select="${model.id}" data-type="${model.model_type}"${busy ? " disabled" : ""}>Use</button>`;
       }
 
       const recommended = model.description.includes("Recommended") ? '<span class="badge">Rec</span>' : "";
@@ -933,6 +961,7 @@
               <div class="model-stat">Speed ${speedDots}</div>
             </div>
             <div class="model-size">${model.size_mb >= 1000 ? (model.size_mb / 1024).toFixed(1) + " GB" : model.size_mb + " MB"}</div>
+            ${prepNote}
           </div>
           <div class="model-action">${actionHtml}</div>
         </div>`;
@@ -941,6 +970,40 @@
     let currentWhisperModel = "";
     let currentCleanupModel = "";
     const activeDownloads = {};
+
+    // model id -> { started, compiling, type }. A load that runs past COMPILE_HINT_S is Core ML
+    // compiling the model (a first Bark load takes minutes); a prepared one loads in seconds.
+    const preparing = {};
+    const COMPILE_HINT_S = 3;
+    const PREP_NOTE = "One-time setup: compiling the model for this Mac's Neural Engine. Usually takes a few minutes. You can keep dictating meanwhile.";
+    let prepTimer = null;
+
+    function elapsedS(id) { return Math.floor((Date.now() - preparing[id].started) / 1000); }
+    function isCompiling(id) { return preparing[id].compiling || elapsedS(id) >= COMPILE_HINT_S; }
+    function prepLabel(id) {
+      if (!isCompiling(id)) return "Loading…";
+      const s = elapsedS(id);
+      return `Compiling… ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    }
+
+    function startPrep(id, compiling, type) {
+      if (!(id in preparing)) preparing[id] = { started: Date.now(), compiling, type };
+      preparing[id].compiling = preparing[id].compiling || compiling;
+      prepTimer = prepTimer || setInterval(() => {
+        for (const id of Object.keys(preparing)) {
+          const label = document.getElementById("prep-" + id);
+          const note = document.getElementById("prep-note-" + id);
+          if (label) label.textContent = prepLabel(id);
+          if (note) note.hidden = !isCompiling(id);
+        }
+      }, 1000);
+      loadModels();
+    }
+
+    function endPrep(id) {
+      delete preparing[id];
+      if (Object.keys(preparing).length === 0) { clearInterval(prepTimer); prepTimer = null; }
+    }
 
     async function loadModels() {
       try {
@@ -962,6 +1025,7 @@
 
         // Restore progress for any active downloads after re-render
         for (const [id, pct] of Object.entries(activeDownloads)) {
+          if (id in preparing) continue;
           const btn = document.getElementById("btn-" + id);
           const pctEl = document.getElementById("pct-" + id);
           if (btn) { btn.textContent = "Cancel"; btn.className = "model-btn cancel"; }
@@ -1003,21 +1067,16 @@
     }
 
     async function selectModel(modelId, modelType) {
+      startPrep(modelId, false, modelType);
       try {
-        if (modelType === "Whisper") {
-          await invoke("load_whisper_model_cmd", { modelId });
-          currentWhisperModel = modelId;
-          settings.active_whisper_model = modelId;
-        } else {
-          await invoke("load_cleanup_model", { modelId });
-          currentCleanupModel = modelId;
-          settings.active_cleanup_model = modelId;
-        }
-        saveSettings();
-        loadModels();
+        // The backend saves the choice when the load finishes, so it sticks even if this window
+        // is closed during a minutes-long first Bark load. Its settings-changed event updates us.
+        await invoke("use_model", { modelId });
       } catch (err) {
         console.error("Model load error:", err);
       }
+      endPrep(modelId);
+      loadModels();
     }
 
     listen("model-download-progress", (event) => {
@@ -1027,22 +1086,20 @@
       if (el) el.textContent = pct + "%";
     });
     listen("model-download-preparing", (event) => {
-      var id = event.payload;
-      if (id in activeDownloads) activeDownloads[id] = "Preparing for this Mac…";
-      var el = document.getElementById("pct-" + id);
-      if (el) el.textContent = "Preparing for this Mac…";
-      var btn = document.getElementById("btn-" + id);
-      if (btn) btn.style.display = "none";
+      // After downloading Bark, the backend compiles it so the first use is quick.
+      startPrep(event.payload, true, "Whisper");
     });
     listen("model-download-complete", (event) => {
       console.log("[settings] download complete:", event.payload);
       delete activeDownloads[event.payload];
+      if (event.payload in preparing) endPrep(event.payload);
       loadModels();
     });
     listen("model-download-error", (event) => {
       var [id, err] = event.payload;
       console.error("[settings] download error:", id, err);
       delete activeDownloads[id];
+      if (id in preparing) endPrep(id);
       loadModels();
     });
 

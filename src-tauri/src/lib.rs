@@ -344,7 +344,7 @@ fn download_model(model_id: String, app: tauri::AppHandle) -> Result<(), String>
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn load_cleanup_model(model_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let info = models::get_model(&model_id).ok_or("Unknown model")?;
     let path = models::model_path(info);
@@ -355,7 +355,9 @@ fn load_cleanup_model(model_id: String, state: tauri::State<'_, AppState>) -> Re
     cleaner.start_worker(info.id, &path)
 }
 
-#[tauri::command]
+// Async, like the other model-loading commands, so a load (minutes for Bark until Core ML has
+// prepared it for this Mac) runs off the main thread instead of freezing the app.
+#[tauri::command(async)]
 fn load_whisper_model_cmd(model_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let info = models::get_model(&model_id).ok_or("Unknown model")?;
     let path = models::model_path(info);
@@ -462,7 +464,7 @@ fn dismiss_whats_new(app: tauri::AppHandle) {
 }
 
 /// Makes a downloaded speech or cleanup model the active one and saves the choice.
-#[tauri::command]
+#[tauri::command(async)]
 fn use_model(model_id: String, state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
     let info = models::get_model(&model_id).ok_or("Unknown model")?;
     if !models::is_downloaded(info) {
@@ -488,7 +490,7 @@ fn use_model(model_id: String, state: tauri::State<'_, AppState>, app: tauri::Ap
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn switch_language(language: String, state: tauri::State<'_, AppState>) -> Result<LanguageSwitch, String> {
     let (current_whisper, current_cleanup) = {
         let s = state.settings.lock().map_err(|e| e.to_string())?;

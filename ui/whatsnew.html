@@ -125,6 +125,16 @@
       font-variant-numeric: tabular-nums;
     }
     .offer-status.done { color: var(--success); font-weight: 600; }
+    .offer-status.busy { display: flex; align-items: center; gap: 8px; }
+    .spin {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 2px solid rgba(108, 92, 231, 0.25);
+      border-top-color: var(--accent);
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
     .offer-status.error { color: var(--danger); }
 
     .note {
@@ -197,7 +207,7 @@
       speech: {
         kind: "Speech recognition",
         body: "Runs on your Mac's Neural Engine. In our tests it made under half Whisper Base's mistakes and was several times faster. English only.",
-        note: "Takes a few minutes to prepare after downloading; you can keep dictating meanwhile.",
+        note: "After downloading, it compiles for this Mac's Neural Engine. That's one-time and usually takes a few minutes; you can keep dictating meanwhile.",
       },
       cleanup: {
         kind: "Text cleanup",
@@ -206,8 +216,24 @@
       },
     };
 
-    // model id -> { offer, state: "idle" | "downloading" | "preparing" | "done" | "error", pct, error }
+    // model id -> { offer, state: "idle" | "downloading" | "preparing" | "switching" | "done" | "error", pct, error, started }
     const offers = {};
+
+    // A switch that runs past COMPILE_HINT_S is Core ML compiling the model; a prepared one is quick.
+    const COMPILE_HINT_S = 3;
+
+    function busyLabel({ state, started }) {
+      const s = Math.floor((Date.now() - started) / 1000);
+      if (state === "switching" && s < COMPILE_HINT_S) return "Switching…";
+      return `Compiling for this Mac… ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    }
+
+    setInterval(() => {
+      for (const [id, entry] of Object.entries(offers)) {
+        const el = document.getElementById("busy-" + id);
+        if (el) el.textContent = busyLabel(entry);
+      }
+    }, 1000);
 
     function escapeHtml(str) {
       return String(str).replace(/[&<>"']/g, (c) =>
@@ -230,10 +256,9 @@
           action = `<span class="offer-status done">✓ Now using ${escapeHtml(offer.name)}</span>`;
         } else if (state === "downloading") {
           action = `<span class="offer-status">Downloading… ${pct}%</span>`;
-        } else if (state === "preparing") {
-          action = `<span class="offer-status">Preparing for this Mac…</span>`;
-        } else if (state === "switching") {
-          action = `<span class="offer-status">Switching…</span>`;
+        } else if (state === "preparing" || state === "switching") {
+          const entry = offers[offer.model_id];
+          action = `<span class="offer-status busy"><span class="spin"></span><span id="busy-${offer.model_id}">${busyLabel(entry)}</span></span>`;
         } else {
           const label = offer.downloaded ? "Switch" : `Switch (${sizeLabel(offer.size_mb)})`;
           action = (state === "error" ? `<span class="offer-status error">${escapeHtml(error)}</span>` : "")
@@ -268,6 +293,10 @@
 
     function setState(id, state, extra = {}) {
       if (!(id in offers)) return;
+      // The clock runs from when preparing (or a direct switch) began, through the switch after it.
+      const busy = state === "preparing" || state === "switching";
+      const wasBusy = offers[id].state === "preparing" || offers[id].state === "switching";
+      if (busy && !wasBusy) extra = { started: Date.now(), ...extra };
       Object.assign(offers[id], { state }, extra);
       render();
     }

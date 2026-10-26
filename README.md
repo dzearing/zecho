@@ -2,18 +2,18 @@
 
 **Voice to clipboard, instantly.** Speak naturally, get clean text -- no subscriptions, no cloud, no ads. Everything runs locally on your machine.
 
-Hold the **FN key** to record, release to get polished text copied to your clipboard. That's it.
+Hold **Shift+Fn** to record, release to get polished text copied to your clipboard. That's it.
 
 ## How It Works
 
-1. **Speak** -- Hold FN and talk naturally. Corrections, pauses, and filler words are all fine.
+1. **Speak** -- Hold Shift+Fn and talk naturally. Corrections, pauses, and filler words are all fine.
 2. **AI cleans** -- Local speech recognition (Bark or Whisper) transcribes your speech. A small local model removes filler words, fixes grammar, and resolves self-corrections ("I want red, uh, no actually blue" becomes "I want blue").
 3. **Paste** -- Clean text lands in your clipboard. Paste anywhere.
 
 ## Features
 
 - **Fully local** -- No data leaves your machine. No accounts, no network calls, no telemetry.
-- **FN key recording** -- Hold to record, release to transcribe. Double-tap to lock recording.
+- **Shift+Fn recording** -- Hold to record, release to transcribe. Double-tap to lock recording. Switch to plain Fn in Settings.
 - **AI text cleanup** -- Removes "um," "uh," filler words, and resolves self-corrections using a small local model.
 - **Writing styles** -- Formal, Casual, or Very Casual. Custom prompts for fine-tuning.
 - **Cleanup levels** -- None, Light, Medium, or High -- control how aggressively AI edits your text.

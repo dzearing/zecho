@@ -43,6 +43,9 @@ pub struct Settings {
     pub pill_y_pct: Option<f64>,
     #[serde(default = "default_true")]
     pub fn_key_enabled: bool,
+    /// Hold Shift+Fn rather than Fn alone to record.
+    #[serde(default = "default_true")]
+    pub fn_key_needs_shift: bool,
     #[serde(default = "default_language")]
     pub language: String,
     #[serde(default)]
@@ -78,6 +81,7 @@ impl Default for Settings {
             pill_x_pct: None,
             pill_y_pct: None,
             fn_key_enabled: true,
+            fn_key_needs_shift: true,
             language: "en".to_string(),
             autostart_initialized: false,
             whats_new_seen: crate::WHATS_NEW_REVISION,

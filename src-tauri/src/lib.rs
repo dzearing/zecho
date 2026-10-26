@@ -248,6 +248,7 @@ fn update_settings(new_settings: Settings, state: tauri::State<'_, AppState>, ap
     let path = settings.path.clone();
     *settings = new_settings;
     settings.path = path;
+    hotkey::set_fn_needs_shift(settings.fn_key_needs_shift);
     settings.save()?;
     app.emit("settings-changed", &*settings).ok();
     Ok(())
@@ -1295,12 +1296,15 @@ pub fn run() {
     std::fs::create_dir_all(&data_dir).ok();
     std::fs::create_dir_all(models::model_dir()).ok();
 
+    let settings = Settings::load(&data_dir);
+    hotkey::set_fn_needs_shift(settings.fn_key_needs_shift);
+
     let state = AppState {
         recorder: Mutex::new(AudioRecorder::new()),
         transcriber: Mutex::new(Transcriber::new()),
         cleaner: Mutex::new(TextCleaner::new()),
         history: Mutex::new(HistoryStore::load(&data_dir)),
-        settings: Mutex::new(Settings::load(&data_dir)),
+        settings: Mutex::new(settings),
         pending_update: Mutex::new(None),
         update_check_in_progress: std::sync::atomic::AtomicBool::new(false),
         tray_update_item: Mutex::new(None),

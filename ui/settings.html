@@ -597,12 +597,14 @@
         <div class="section-label">Hotkey</div>
         <div class="settings-group">
           <div class="setting-row">
-            <span class="label">Fn key (hold to record)</span>
-            <label class="toggle">
-              <input type="checkbox" id="fn-key-enabled" checked />
-              <span class="toggle-track"></span>
-              <span class="toggle-knob"></span>
-            </label>
+            <span class="label">Hold to record</span>
+            <div class="select-wrap">
+              <select id="fn-key-select">
+                <option value="shift+fn">Shift+Fn</option>
+                <option value="fn">Fn</option>
+                <option value="off">Off</option>
+              </select>
+            </div>
           </div>
           <div class="setting-row">
             <span class="label">Keyboard shortcut</span>
@@ -612,7 +614,7 @@
             </div>
           </div>
         </div>
-        <div class="section-info">Fn: hold to record, release to stop. Double-tap to lock. The keyboard shortcut toggles recording on/off.</div>
+        <div class="section-info">Hold the keys to record, release Fn to stop. Double-tap to lock. The keyboard shortcut toggles recording on/off.</div>
       </div>
 
     </div>
@@ -661,7 +663,8 @@
       if (cleanupOn) previousCleanupLevel = settings.cleanup_level;
 
       document.getElementById("language-select").value = settings.language || "en";
-      document.getElementById("fn-key-enabled").checked = settings.fn_key_enabled !== false;
+      document.getElementById("fn-key-select").value =
+        settings.fn_key_enabled === false ? "off" : settings.fn_key_needs_shift === false ? "fn" : "shift+fn";
       renderHotkey();
 
       try {
@@ -712,8 +715,9 @@
       saveSettings();
     });
 
-    document.getElementById("fn-key-enabled").addEventListener("change", (e) => {
-      settings.fn_key_enabled = e.target.checked;
+    document.getElementById("fn-key-select").addEventListener("change", (e) => {
+      settings.fn_key_enabled = e.target.value !== "off";
+      if (settings.fn_key_enabled) settings.fn_key_needs_shift = e.target.value === "shift+fn";
       saveSettings();
     });
 

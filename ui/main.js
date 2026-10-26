@@ -21,7 +21,7 @@ const $ = (sel) => document.querySelector(sel);
 
 function setState(state) {
   const pill = $("#pill");
-  const states = ["idle", "recording", "processing", "done", "setup"];
+  const states = ["idle", "recording", "processing", "done", "setup", "error"];
 
   states.forEach((s) => {
     const el = $(`#state-${s}`);
@@ -109,7 +109,7 @@ async function stopRecording() {
     // UI stays in "processing" — transcription-complete event will trigger "done"
   } catch (err) {
     console.error("Stop error:", err);
-    setState("idle");
+    showError(err);
   }
 }
 
@@ -226,8 +226,21 @@ listen("transcription-complete", () => {
 });
 listen("transcription-error", (event) => {
   console.error("Transcription error:", event.payload);
-  setState("idle");
+  showError(event.payload);
 });
+
+// Shows why a recording produced no text, in words that fit the pill.
+function showError(err) {
+  const msg = String(err || "");
+  let label = "Couldn't transcribe";
+  if (msg.includes("not loaded")) label = "Speech model loading…";
+  else if (msg.includes("No speech") || msg.includes("No audio")) label = "No speech heard";
+  else if (msg.includes("English-only")) label = "Bark is English-only";
+  $("#error-label").textContent = label;
+  setState("error");
+  if (doneTimer) clearTimeout(doneTimer);
+  doneTimer = setTimeout(() => setState("idle"), 2500);
+}
 
 
 // ── Drag ──

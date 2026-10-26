@@ -286,6 +286,14 @@ pub fn speech_model_candidates(active_id: &str) -> Vec<&'static ModelInfo> {
     out
 }
 
+/// A downloaded English Whisper model to transcribe with while Bark is still loading.
+pub fn whisper_stand_in() -> Option<&'static ModelInfo> {
+    ["whisper-base-en", "whisper-tiny-en", "whisper-small-en"]
+        .into_iter()
+        .filter_map(get_model)
+        .find(|m| is_downloaded(m))
+}
+
 pub fn whisper_model_for_language(current_id: &str, language: &str) -> String {
     let need_multilingual = language != "en";
     let current = get_model(current_id);

@@ -122,10 +122,11 @@ fn process_recording(state: &AppState, samples: Vec<f32>) -> Result<String, Stri
     let t0 = Instant::now();
     let transcriber = state.transcriber.lock().map_err(|e| e.to_string())?;
     let raw_text = transcriber.transcribe(&samples, &language)?;
+    let stt_model = transcriber.model_id().unwrap_or_default().to_string();
     drop(transcriber);
     let transcribe_ms = t0.elapsed().as_millis() as u64;
 
-    if raw_text.is_empty() {
+    if raw_text.is_empty() || is_silence_hallucination(&raw_text, audio::loudest_window_rms(&samples)) {
         return Err("No speech detected".to_string());
     }
 
@@ -155,10 +156,6 @@ fn process_recording(state: &AppState, samples: Vec<f32>) -> Result<String, Stri
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     clipboard.set_text(&text).map_err(|e| e.to_string())?;
 
-    let settings2 = state.settings.lock().map_err(|e| e.to_string())?;
-    let stt_model = settings2.active_whisper_model.clone();
-    drop(settings2);
-
     let mut history = state.history.lock().map_err(|e| e.to_string())?;
     history.add(text.clone(), raw_text, transcribe_ms, cleanup_ms, stt_model, cleanup_model);
     drop(history);
@@ -169,6 +166,19 @@ fn process_recording(state: &AppState, samples: Vec<f32>) -> Result<String, Stri
     }
 
     Ok(text)
+}
+
+/// Speech models hear a lone "Yeah." or "Okay." in silence or room noise. Loudness alone can't
+/// tell that apart from a softly spoken word (quiet speech measured below some silent
+/// recordings), so only a quiet recording that produced nothing but a filler counts as silence.
+fn is_silence_hallucination(text: &str, loudest_rms: f32) -> bool {
+    const FILLERS: &[&str] = &[
+        "yeah", "okay", "ok", "hmm", "hm", "mm", "mhm", "uh", "um", "ah", "oh", "you", "thank you", "thanks", "bye",
+    ];
+    // A normal sentence measured 0.018; silent and noisy recordings measured up to 0.011.
+    const QUIET_RMS: f32 = 0.015;
+    let words = text.trim().trim_end_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+    loudest_rms < QUIET_RMS && FILLERS.contains(&words.as_str())
 }
 
 fn simulate_paste() {
@@ -353,7 +363,7 @@ fn load_whisper_model_cmd(model_id: String, state: tauri::State<'_, AppState>) -
         return Err(format!("Model not downloaded: {}", info.name));
     }
     let engine = transcribe::open_engine(&path)?;
-    state.transcriber.lock().map_err(|e| e.to_string())?.set_engine(engine);
+    state.transcriber.lock().map_err(|e| e.to_string())?.set_engine(engine, info.id);
     Ok(())
 }
 
@@ -462,7 +472,7 @@ fn use_model(model_id: String, state: tauri::State<'_, AppState>, app: tauri::Ap
     match info.model_type {
         models::ModelType::Whisper => {
             let engine = transcribe::open_engine(&path)?;
-            state.transcriber.lock().map_err(|e| e.to_string())?.set_engine(engine);
+            state.transcriber.lock().map_err(|e| e.to_string())?.set_engine(engine, info.id);
         }
         models::ModelType::Cleanup => {
             state.cleaner.lock().map_err(|e| e.to_string())?.start_worker(info.id, &path)?;
@@ -492,7 +502,7 @@ fn switch_language(language: String, state: tauri::State<'_, AppState>) -> Resul
         let info = models::get_model(&target_id).ok_or("Unknown model")?;
         if models::is_downloaded(info) {
             let engine = transcribe::open_engine(&models::model_path(info))?;
-            state.transcriber.lock().map_err(|e| e.to_string())?.set_engine(engine);
+            state.transcriber.lock().map_err(|e| e.to_string())?.set_engine(engine, info.id);
         }
         result.whisper = Some(target_id);
     }
@@ -625,7 +635,7 @@ fn setup_download_models(app: tauri::AppHandle) {
                 match transcribe::open_engine(&path) {
                     Ok(engine) => {
                         if let Ok(mut t) = state.transcriber.lock() {
-                            t.set_engine(engine);
+                            t.set_engine(engine, info.id);
                         }
                         if let Ok(mut s) = state.settings.lock() {
                             s.active_whisper_model = info.id.to_string();
@@ -1268,16 +1278,32 @@ fn init_models_async(app_handle: tauri::AppHandle) {
     std::thread::spawn(move || {
         let state = app_handle.state::<AppState>();
         let active_id = state.settings.lock().map(|s| s.active_whisper_model.clone()).unwrap_or_default();
-        // Load the speech model the user chose, falling back to the default, then Whisper base.en.
-        for info in models::speech_model_candidates(&active_id) {
-            if !models::is_downloaded(info) {
-                continue;
+        let candidates: Vec<_> = models::speech_model_candidates(&active_id)
+            .into_iter()
+            .filter(|m| models::is_downloaded(m))
+            .collect();
+
+        // Core ML re-prepares Bark for the Neural Engine after every app update, which takes
+        // minutes. Load a downloaded Whisper model first so dictation works in the meantime;
+        // Bark replaces it below once it's ready.
+        if candidates.first().map_or(false, |m| m.engine == models::Engine::Bark) {
+            if let Some(info) = models::whisper_stand_in() {
+                if let Ok(engine) = transcribe::open_engine(&models::model_path(info)) {
+                    if let Ok(mut t) = state.transcriber.lock() {
+                        t.set_engine(engine, info.id);
+                    }
+                    eprintln!("Loaded {} while Bark prepares", info.id);
+                }
             }
+        }
+
+        // Load the speech model the user chose, falling back to the default, then Whisper base.en.
+        for info in candidates {
             // Open outside the lock: if Core ML has dropped Bark's cache this takes minutes.
             match transcribe::open_engine(&models::model_path(info)) {
                 Ok(engine) => {
                     if let Ok(mut t) = state.transcriber.lock() {
-                        t.set_engine(engine);
+                        t.set_engine(engine, info.id);
                     }
                     eprintln!("Loaded speech model: {}", info.id);
                     break;
@@ -1487,6 +1513,29 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error running zecho");
+}
+
+#[cfg(test)]
+mod silence_tests {
+    use super::is_silence_hallucination;
+
+    #[test]
+    fn quiet_lone_fillers_are_silence() {
+        assert!(is_silence_hallucination("Yeah.", 0.0045));
+        assert!(is_silence_hallucination("Okay.", 0.0025));
+        assert!(is_silence_hallucination("Hmm.", 0.0092));
+    }
+
+    #[test]
+    fn quiet_real_words_are_kept() {
+        assert!(!is_silence_hallucination("Yes.", 0.0062));
+        assert!(!is_silence_hallucination("Okay, sounds good.", 0.005));
+    }
+
+    #[test]
+    fn spoken_fillers_are_kept() {
+        assert!(!is_silence_hallucination("Okay.", 0.02));
+    }
 }
 
 #[cfg(test)]

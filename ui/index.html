@@ -53,6 +53,15 @@
         <span class="pill-label">Processing</span>
       </div>
 
+      <!-- Error: a recording that didn't produce text -->
+      <div id="state-error" class="hidden">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.5" fill="none"/>
+          <path d="M7 4V7.5M7 9.75V10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <span class="pill-label" id="error-label"></span>
+      </div>
+
       <!-- Done -->
       <div id="state-done" class="hidden">
         <svg width="16" height="16" viewBox="0 0 18 18" fill="none">

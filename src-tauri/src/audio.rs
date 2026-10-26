@@ -161,3 +161,12 @@ fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     }
     output
 }
+
+/// RMS of the loudest 100 ms of 16 kHz audio. Speech is sustained, so a click or bump can't
+/// raise it the way it raises the peak sample.
+pub fn loudest_window_rms(samples: &[f32]) -> f32 {
+    samples
+        .chunks(1600)
+        .map(|w| (w.iter().map(|s| s * s).sum::<f32>() / w.len() as f32).sqrt())
+        .fold(0.0, f32::max)
+}

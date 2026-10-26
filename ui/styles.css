@@ -343,6 +343,25 @@ html, body {
   animation: fadeIn 0.15s ease;
 }
 
+/* ── Error state ── */
+
+#pill.error,
+#pill.error:hover {
+  height: 30px;
+  width: 180px;
+  border-radius: 15px;
+  padding: 0 12px;
+  border-color: rgba(255, 69, 58, 0.25);
+}
+
+#state-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--recording);
+  animation: fadeIn 0.15s ease;
+}
+
 /* ── Animations ── */
 
 @keyframes fadeIn {

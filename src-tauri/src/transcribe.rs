@@ -9,6 +9,8 @@ pub enum Engine {
 
 pub struct Transcriber {
     engine: Option<Engine>,
+    /// The model the engine runs, which differs from the setting while Bark is still loading.
+    model_id: Option<String>,
 }
 
 unsafe impl Send for Transcriber {}
@@ -16,12 +18,17 @@ unsafe impl Sync for Transcriber {}
 
 impl Transcriber {
     pub fn new() -> Self {
-        Self { engine: None }
+        Self { engine: None, model_id: None }
     }
 
     /// Swaps in an engine opened with `open_engine`, so slow loads don't need the transcriber lock.
-    pub fn set_engine(&mut self, engine: Engine) {
+    pub fn set_engine(&mut self, engine: Engine, model_id: &str) {
         self.engine = Some(engine);
+        self.model_id = Some(model_id.to_string());
+    }
+
+    pub fn model_id(&self) -> Option<&str> {
+        self.model_id.as_deref()
     }
 
     pub fn is_loaded(&self) -> bool {

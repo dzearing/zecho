@@ -28,7 +28,51 @@ fn parse_response(response: &str, raw_text: &str) -> ParseResult {
         return ParseResult::Fallback;
     }
 
+    if botched_correction(raw_text, &result) {
+        eprintln!("Cleanup: self-correction removed the wrong words, using raw text");
+        return ParseResult::Fallback;
+    }
+
     ParseResult::Ok(result)
+}
+
+/// Phrases speakers use to correct themselves ("red, I mean blue").
+const CORRECTION_MARKERS: &[&[&str]] = &[&["i", "mean"], &["sorry"], &["wait"], &["actually"]];
+/// Words that can sit between a mistake and the correction marker.
+const SKIPPABLE: &[&str] = &["um", "uh", "er", "ah", "hmm", "oh", "like", "so", "well", "no", "okay", "ok"];
+
+fn words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'').to_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+fn marker_positions(words: &[String], marker: &[&str]) -> Vec<usize> {
+    (0..words.len().saturating_sub(marker.len() - 1))
+        .filter(|&i| marker.iter().enumerate().all(|(k, m)| words[i + k] == *m))
+        .collect()
+}
+
+/// True when cleanup kept a correction marker but dropped what came before it, as Spokenly does
+/// with "Hello, I like red. I mean blue." -> "Hello, I mean blue." A real fix removes the marker
+/// along with the mistake, so a kept marker means the words before it weren't a mistake.
+fn botched_correction(raw_text: &str, cleaned: &str) -> bool {
+    let raw = words(raw_text);
+    let out = words(cleaned);
+    CORRECTION_MARKERS.iter().any(|marker| {
+        let positions = marker_positions(&raw, marker);
+        if positions.is_empty() || marker_positions(&out, marker).len() < positions.len() {
+            return false;
+        }
+        positions.iter().any(|&i| {
+            raw[..i]
+                .iter()
+                .rev()
+                .find(|w| !SKIPPABLE.contains(&w.as_str()))
+                .map_or(false, |prev| !out.contains(prev))
+        })
+    })
 }
 
 pub struct CleanupRequest {
@@ -132,7 +176,7 @@ impl TextCleaner {
                             continue;
                         }
                         _ => {
-                            eprintln!("Cleanup: retry failed, using raw text");
+                            eprintln!("Cleanup: no usable output, using raw text");
                             break req.raw_text.clone();
                         }
                     }
@@ -429,5 +473,35 @@ mod tests {
             ParseResult::Ok(t) => assert_eq!(t, "Hi there."),
             _ => panic!("expected Ok"),
         }
+    }
+
+    fn cleaned(raw: &str, response: &str) -> Option<String> {
+        match parse_response(response, raw) {
+            ParseResult::Ok(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn correction_that_drops_the_wrong_words_falls_back() {
+        assert_eq!(cleaned("Hello, I like red. I mean blue.", "Hello, I mean blue"), None);
+        assert_eq!(cleaned("I like red, no, I mean blue.", "I mean blue."), None);
+        assert_eq!(cleaned("Hello, I like red. Uh, I mean blue.", "Hello, I mean blue"), None);
+    }
+
+    #[test]
+    fn real_corrections_are_kept() {
+        assert_eq!(cleaned("I like red, I mean blue.", "I like blue.").as_deref(), Some("I like blue."));
+        assert_eq!(cleaned("at 3 sorry 4 o'clock", "at 4 o'clock").as_deref(), Some("at 4 o'clock"));
+        assert_eq!(
+            cleaned("I mean, we should go to the store, no wait, the mall.", "I mean, we should go to the mall.").as_deref(),
+            Some("I mean, we should go to the mall.")
+        );
+    }
+
+    #[test]
+    fn kept_markers_with_nothing_dropped_are_fine() {
+        assert_eq!(cleaned("so um I mean, it's fine.", "I mean, it's fine").as_deref(), Some("I mean, it's fine"));
+        assert_eq!(cleaned("It's actually pretty good.", "It's actually pretty good").as_deref(), Some("It's actually pretty good"));
     }
 }
